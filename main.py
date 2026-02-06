@@ -251,6 +251,7 @@ class TicketModel(Base):
     assignee_agent_id = Column(String, nullable=True)
     contact_id = Column(String, nullable=True)
     due_date = Column(DateTime, nullable=True)
+    created_by_id = Column(Integer, nullable=True)  # User ID who created the ticket
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -315,6 +316,17 @@ class UserResponse(BaseModel):
     role: str
     is_active: bool
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class UserUpdate(BaseModel):
+    email: Optional[str] = Field(None, description="Valid email required")
+    full_name: Optional[str] = Field(None, min_length=2, max_length=100, description="Full name")
+    password: Optional[str] = Field(None, min_length=8, description="Password must be at least 8 characters")
+    role: Optional[str] = Field(None, pattern="^(user|agent|admin)$", description="User role: user, agent, or admin")
+    is_active: Optional[bool] = Field(None, description="Account active status")
 
 
 class LoginRequest(BaseModel):
@@ -469,6 +481,7 @@ class TicketResponse(BaseModel):
     assignee_agent_id: Optional[str]
     contact_id: Optional[str]
     due_date: Optional[datetime]
+    created_by_id: Optional[int]
     created_at: datetime
     updated_at: datetime
 
@@ -688,6 +701,75 @@ async def get_optional_user(request: Request, db: Session = Depends(get_db)) -> 
     return user
 
 
+# ============================================================================
+# PERMISSION HELPERS
+# ============================================================================
+
+def require_admin(current_user: Optional[UserModel]):
+    """Verify that the current user is an admin."""
+    if not current_user or current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+
+
+def require_agent_or_admin(current_user: Optional[UserModel]):
+    """Verify that the current user is an agent or admin."""
+    if not current_user or current_user.role not in ["admin", "agent"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent or admin access required"
+        )
+
+
+def can_access_ticket(ticket: TicketModel, current_user: Optional[UserModel]) -> bool:
+    """Check if the current user can access the given ticket.
+    
+    Rules:
+    - Admin and agent: can access all tickets
+    - User: can only access their own tickets (created_by_id)
+    """
+    if not current_user:
+        return False
+    
+    # Admin and agent can see all tickets
+    if current_user.role in ["admin", "agent"]:
+        return True
+    
+    # User can only see their own tickets
+    if current_user.role == "user":
+        return ticket.created_by_id == current_user.id
+    
+    return False
+
+
+def can_modify_ticket(ticket: TicketModel, current_user: Optional[UserModel]) -> bool:
+    """Check if the current user can modify the given ticket.
+    
+    Rules:
+    - Admin: can modify all tickets
+    - Agent: can modify all tickets
+    - User: can only modify their own tickets (created_by_id)
+    """
+    if not current_user:
+        return False
+    
+    # Admin can modify all tickets
+    if current_user.role == "admin":
+        return True
+    
+    # Agent can modify all tickets
+    if current_user.role == "agent":
+        return True
+    
+    # User can only modify their own tickets
+    if current_user.role == "user":
+        return ticket.created_by_id == current_user.id
+    
+    return False
+
+
 def log_audit(
     user_id: Optional[int],
     username: str,
@@ -778,6 +860,7 @@ async def seed_data(
 ):
     """Seed demo data for frontend development."""
     created = {
+        "users": 0,
         "branches": 0,
         "workgroups": 0,
         "agents": 0,
@@ -787,10 +870,60 @@ async def seed_data(
     }
 
     # Store created objects for relationships instead of querying
+    users_list = []
     branches_list = []
     workgroups_list = []
     agents_list = []
     contacts_list = []
+    
+    # Create demo users first (for ticket ownership)
+    if db.query(UserModel).count() == 0:
+        users = [
+            UserModel(
+                username="admin",
+                email="admin@workhub.local",
+                full_name="System Administrator",
+                hashed_password=get_password_hash("admin123"),
+                role="admin",
+                is_active=True,
+            ),
+            UserModel(
+                username="agent1",
+                email="agent1@workhub.local",
+                full_name="Agent Smith",
+                hashed_password=get_password_hash("agent123"),
+                role="agent",
+                is_active=True,
+            ),
+            UserModel(
+                username="agent2",
+                email="agent2@workhub.local",
+                full_name="Agent Johnson",
+                hashed_password=get_password_hash("agent123"),
+                role="agent",
+                is_active=True,
+            ),
+            UserModel(
+                username="user1",
+                email="user1@workhub.local",
+                full_name="John User",
+                hashed_password=get_password_hash("user123"),
+                role="user",
+                is_active=True,
+            ),
+            UserModel(
+                username="user2",
+                email="user2@workhub.local",
+                full_name="Jane User",
+                hashed_password=get_password_hash("user123"),
+                role="user",
+                is_active=True,
+            ),
+        ]
+        db.add_all(users)
+        db.flush()  # Flush to get IDs
+        users_list = users
+        created["users"] = len(users)
 
     if db.query(BranchModel).count() == 0:
         branches = []
@@ -865,6 +998,7 @@ async def seed_data(
         branches = branches_list if branches_list else db.query(BranchModel).all()
         contacts = contacts_list if contacts_list else db.query(ContactModel).all()
         agents = agents_list if agents_list else db.query(AgentModel).all()
+        users = users_list if users_list else db.query(UserModel).all()
         
         statuses = ["open", "in_progress", "closed"]
         resolutions = ["resolved", "cancelled", "duplicate", "wontfix"]
@@ -876,6 +1010,8 @@ async def seed_data(
             contact = contacts[(idx - 1) % len(contacts)] if contacts else None
             # Assign agents to tickets (not all tickets get an agent)
             agent = agents[(idx - 1) % len(agents)] if agents and idx % 3 != 0 else None
+            # Assign creator: rotate between available users
+            creator = users[(idx - 1) % len(users)] if users else None
             
             status = statuses[idx % 3]
             resolution = None
@@ -902,6 +1038,7 @@ async def seed_data(
                     assignee_agent_id=agent.id if agent else None,
                     contact_id=contact.id if contact else None,
                     due_date=due_date,
+                    created_by_id=creator.id if creator else None,  # Assign creator
                 )
             )
         db.add_all(tickets)
@@ -1157,6 +1294,309 @@ async def get_current_user_info(
 ):
     """Get current authenticated user information."""
     return current_user
+
+
+# ============================================================================
+# USER MANAGEMENT ENDPOINTS (PHASE 3 - RBAC)
+# ============================================================================
+
+@app.get("/api/users", response_model=PaginatedResponse, tags=["Users"])
+@limiter.limit(RATE_LIMIT)
+async def list_users(
+    request: Request,
+    page: int = 1,
+    limit: int = 10,
+    current_user: Optional[UserModel] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """List all users. Agent can view (read-only), Admin can manage."""
+    require_agent_or_admin(current_user)
+    
+    offset = (page - 1) * limit
+    total = db.query(UserModel).count()
+    users = db.query(UserModel).order_by(UserModel.created_at.desc()).offset(offset).limit(limit).all()
+    
+    data = [UserResponse.model_validate(user) for user in users]
+    
+    # Log the action
+    log_audit(
+        user_id=current_user.id,
+        username=current_user.username,
+        action="list",
+        resource="users",
+        resource_id=None,
+        status="success",
+        db=db,
+        details=f"Listed {len(data)} users (page {page})"
+    )
+    
+    return {
+        "data": data,
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "totalPages": (total + limit - 1) // limit,
+        },
+    }
+
+
+@app.post("/api/users", response_model=UserResponse, tags=["Users"], status_code=201)
+@limiter.limit(RATE_LIMIT)
+async def create_user(
+    user: UserCreate,
+    request: Request,
+    current_user: Optional[UserModel] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new user. Admin only."""
+    require_admin(current_user)
+    
+    # Check if user exists
+    existing_user = db.query(UserModel).filter(
+        (UserModel.username == user.username) | (UserModel.email == user.email)
+    ).first()
+    
+    if existing_user:
+        log_audit(
+            user_id=current_user.id,
+            username=current_user.username,
+            action="create",
+            resource="users",
+            resource_id=None,
+            status="failed",
+            db=db,
+            details=f"User already exists: {user.username}",
+            ip_address=request.client.host,
+        )
+        raise HTTPException(status_code=400, detail="Username or email already exists")
+    
+    # Validate role
+    if user.role not in ["user", "agent", "admin"]:
+        raise HTTPException(status_code=400, detail="Invalid role. Must be: user, agent, or admin")
+    
+    # Create new user
+    hashed_password = get_password_hash(user.password)
+    db_user = UserModel(
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        hashed_password=hashed_password,
+        role=user.role,
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    
+    log_audit(
+        user_id=current_user.id,
+        username=current_user.username,
+        action="create",
+        resource="users",
+        resource_id=str(db_user.id),
+        status="success",
+        db=db,
+        details=f"Created user: {db_user.username} with role: {db_user.role}",
+        ip_address=request.client.host,
+    )
+    
+    return db_user
+
+
+@app.get("/api/users/{user_id}", response_model=UserResponse, tags=["Users"])
+@limiter.limit(RATE_LIMIT)
+async def get_user(
+    user_id: int,
+    request: Request,
+    current_user: Optional[UserModel] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """Get user details. Admin only."""
+    require_admin(current_user)
+    
+    user = db.query(UserModel).filter(UserModel.id == user_id).first()
+    if not user:
+        log_audit(
+            user_id=current_user.id,
+            username=current_user.username,
+            action="get",
+            resource="users",
+            resource_id=str(user_id),
+            status="failed",
+            db=db,
+            details="User not found"
+        )
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    log_audit(
+        user_id=current_user.id,
+        username=current_user.username,
+        action="get",
+        resource="users",
+        resource_id=str(user_id),
+        status="success",
+        db=db,
+        details=f"Retrieved user: {user.username}"
+    )
+    
+    return user
+
+
+@app.put("/api/users/{user_id}", response_model=UserResponse, tags=["Users"])
+@limiter.limit(RATE_LIMIT)
+async def update_user(
+    user_id: int,
+    user_update: UserUpdate,
+    request: Request,
+    current_user: Optional[UserModel] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """Update user (change role, password, status). Admin only."""
+    require_admin(current_user)
+    
+    user = db.query(UserModel).filter(UserModel.id == user_id).first()
+    if not user:
+        log_audit(
+            user_id=current_user.id,
+            username=current_user.username,
+            action="update",
+            resource="users",
+            resource_id=str(user_id),
+            status="failed",
+            db=db,
+            details="User not found"
+        )
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Track changes for audit log
+    changes = []
+    
+    # Update email (check uniqueness)
+    if user_update.email is not None and user_update.email != user.email:
+        existing_user = db.query(UserModel).filter(
+            UserModel.email == user_update.email,
+            UserModel.id != user_id
+        ).first()
+        if existing_user:
+            log_audit(
+                user_id=current_user.id,
+                username=current_user.username,
+                action="update",
+                resource="users",
+                resource_id=str(user_id),
+                status="failed",
+                db=db,
+                details=f"Email {user_update.email} already in use"
+            )
+            raise HTTPException(status_code=400, detail="Email already in use")
+        changes.append(f"email: {user.email} -> {user_update.email}")
+        user.email = user_update.email
+    
+    # Update full name
+    if user_update.full_name is not None and user_update.full_name != user.full_name:
+        changes.append(f"full_name: {user.full_name} -> {user_update.full_name}")
+        user.full_name = user_update.full_name
+    
+    # Update password (hash it)
+    if user_update.password is not None:
+        user.hashed_password = get_password_hash(user_update.password)
+        changes.append("password: [UPDATED]")
+    
+    # Update role
+    if user_update.role is not None and user_update.role != user.role:
+        changes.append(f"role: {user.role} -> {user_update.role}")
+        user.role = user_update.role
+    
+    # Update active status
+    if user_update.is_active is not None and user_update.is_active != user.is_active:
+        changes.append(f"is_active: {user.is_active} -> {user_update.is_active}")
+        user.is_active = user_update.is_active
+    
+    if not changes:
+        log_audit(
+            user_id=current_user.id,
+            username=current_user.username,
+            action="update",
+            resource="users",
+            resource_id=str(user_id),
+            status="success",
+            db=db,
+            details="No changes made"
+        )
+        return user
+    
+    db.commit()
+    db.refresh(user)
+    
+    log_audit(
+        user_id=current_user.id,
+        username=current_user.username,
+        action="update",
+        resource="users",
+        resource_id=str(user_id),
+        status="success",
+        db=db,
+        details=f"Updated user {user.username}: {', '.join(changes)}"
+    )
+    
+    return user
+
+
+@app.delete("/api/users/{user_id}", status_code=204, tags=["Users"])
+@limiter.limit(RATE_LIMIT)
+async def delete_user(
+    user_id: int,
+    request: Request,
+    current_user: Optional[UserModel] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """Delete user. Admin only. Cannot delete self."""
+    require_admin(current_user)
+    
+    # Prevent admin from deleting themselves
+    if current_user.id == user_id:
+        log_audit(
+            user_id=current_user.id,
+            username=current_user.username,
+            action="delete",
+            resource="users",
+            resource_id=str(user_id),
+            status="failed",
+            db=db,
+            details="Cannot delete yourself"
+        )
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+    
+    user = db.query(UserModel).filter(UserModel.id == user_id).first()
+    if not user:
+        log_audit(
+            user_id=current_user.id,
+            username=current_user.username,
+            action="delete",
+            resource="users",
+            resource_id=str(user_id),
+            status="failed",
+            db=db,
+            details="User not found"
+        )
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    username = user.username
+    db.delete(user)
+    db.commit()
+    
+    log_audit(
+        user_id=current_user.id,
+        username=current_user.username,
+        action="delete",
+        resource="users",
+        resource_id=str(user_id),
+        status="success",
+        db=db,
+        details=f"Deleted user: {username}"
+    )
+    
+    return None
 
 
 # ============================================================================
@@ -1942,9 +2382,20 @@ async def create_ticket(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Create a new ticket."""
+    """Create a new ticket. Requires authentication."""
+    # Require authentication
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to create tickets"
+        )
+    
     try:
-        db_ticket = TicketModel(id=str(uuid.uuid4()), **ticket.dict())
+        db_ticket = TicketModel(
+            id=str(uuid.uuid4()),
+            created_by_id=current_user.id,  # Assign creator
+            **ticket.dict()
+        )
         db.add(db_ticket)
         db.commit()
         db.refresh(db_ticket)
@@ -1986,12 +2437,29 @@ async def list_tickets(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """List all tickets.
-
+    """List tickets (filtered by role).
+    
+    - Users: only see their own tickets
+    - Agents/Admins: see all tickets
+    
     Defaults: sort_by=updated_at, sort_order=desc when parameters are omitted.
     """
+    # Require authentication
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to view tickets"
+        )
+    
     offset = (page - 1) * limit
     base_query = db.query(TicketModel)
+    
+    # Filter by role
+    if current_user.role == "user":
+        # Users only see their own tickets
+        base_query = base_query.filter(TicketModel.created_by_id == current_user.id)
+    # Admin and agent see all tickets (no additional filter)
+    
     total = base_query.count()
 
     # Default ordering for tickets when not provided
@@ -2028,10 +2496,25 @@ async def get_ticket(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Get a specific ticket."""
+    """Get a specific ticket. Access controlled by role."""
+    # Require authentication
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+    
     ticket = db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Check permissions
+    if not can_access_ticket(ticket, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You can only view your own tickets"
+        )
+    
     return ticket
 
 
@@ -2044,11 +2527,25 @@ async def update_ticket(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Update a ticket."""
+    """Update a ticket. Access controlled by role."""
+    # Require authentication
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+    
     try:
         ticket = db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
+        
+        # Check permissions
+        if not can_modify_ticket(ticket, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: You can only modify your own tickets"
+            )
         
         for key, value in ticket_update.dict(exclude_unset=True).items():
             setattr(ticket, key, value)
@@ -2091,11 +2588,25 @@ async def delete_ticket(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Delete a ticket."""
+    """Delete a ticket. Access controlled by role."""
+    # Require authentication
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+    
     try:
         ticket = db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
+        
+        # Check permissions
+        if not can_modify_ticket(ticket, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: You can only delete your own tickets"
+            )
         
         db.delete(ticket)
         db.commit()

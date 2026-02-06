@@ -145,6 +145,63 @@ curl -X POST "http://localhost:8000/api/tickets/<ticket_id>/messages" \
 ### Get Current User
 `GET /api/me` → Returns authenticated user info (requires Bearer token)
 
+## User Management Endpoints (RBAC - Phase 3)
+
+### List Users
+`GET /api/users?page=1&limit=10` → Returns paginated list of users.
+- **Permissions:** Agent or Admin (Agents can view, Admins can manage)
+- **Response:** `{data: User[], pagination: {page, limit, total, totalPages}}`
+- **Audit Log:** Logged as "list" action on "users" resource
+
+### Get User
+`GET /api/users/{user_id}` → Returns user details by ID.
+- **Permissions:** Admin only
+- **Response:** User object
+- **Errors:** 404 if user not found, 403 if not admin
+- **Audit Log:** Logged as "get" action on "users" resource
+
+### Update User
+`PUT /api/users/{user_id}` → Updates user information. All fields optional.
+- **Permissions:** Admin only
+- **Fields:** email, full_name, password (hashed automatically), role (user|agent|admin), is_active
+- **Validations:**
+  - Email must be unique
+  - Password minimum 8 characters (hashed with bcrypt)
+  - Role must be one of: user, agent, admin
+- **Response:** Updated user object
+- **Errors:** 
+  - 404 if user not found
+  - 400 if email already in use
+  - 403 if not admin
+- **Audit Log:** Logged as "update" action with detailed change list
+
+Example:
+```json
+PUT /api/users/5
+{
+  "email": "newemail@example.com",
+  "role": "agent",
+  "is_active": true
+}
+```
+
+### Delete User
+`DELETE /api/users/{user_id}` → Deletes user account.
+- **Permissions:** Admin only
+- **Response:** 204 No Content
+- **Restrictions:** Cannot delete yourself
+- **Errors:**
+  - 404 if user not found
+  - 400 if trying to delete self
+  - 403 if not admin
+- **Audit Log:** Logged as "delete" action on "users" resource
+
+**Security Notes:**
+- All user management operations require authentication (Bearer token)
+- Passwords are never returned in API responses (excluded from UserResponse schema)
+- All operations are logged in audit_logs table
+- Email and username uniqueness is enforced at database level
+
 ## Statuses | Resolutions | Validations
 
 **Valid Statuses:** `open` (new) | `in_progress` (assigned) | `closed` (complete)
