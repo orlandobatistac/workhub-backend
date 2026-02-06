@@ -3,9 +3,10 @@ import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Any
+import json
 from functools import lru_cache
 
-from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Form, UploadFile, File
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -41,6 +42,97 @@ RATE_LIMIT = os.getenv("RATE_LIMIT", "100/minute")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./workhub.db")
 ALLOWED_ORIGINS_STR = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000,https://friendly-winner-v6xg6vv757qcwv55-5000.app.github.dev")
 ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_STR.split(",")]
+
+# File Upload Setup
+UPLOAD_DIR = "uploads/tickets"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Security Settings for File Uploads
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_FILES_PER_MESSAGE = 5
+ALLOWED_MIME_TYPES = {
+    "image/jpeg", "image/png", "image/gif", "image/webp",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/plain", "text/csv"
+}
+
+ALLOWED_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".webp",  # Images
+    ".pdf",  # PDF
+    ".doc", ".docx",  # Word
+    ".xls", ".xlsx",  # Excel
+    ".txt", ".csv"  # Text
+}
+
+# Map MIME types to expected extensions (for double validation)
+MIME_TO_EXTENSIONS = {
+    "image/jpeg": {".jpg", ".jpeg"},
+    "image/png": {".png"},
+    "image/gif": {".gif"},
+    "image/webp": {".webp"},
+    "application/pdf": {".pdf"},
+    "application/msword": {".doc"},
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {".docx"},
+    "application/vnd.ms-excel": {".xls"},
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {".xlsx"},
+    "text/plain": {".txt"},
+    "text/csv": {".csv"}
+}
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize filename to prevent path traversal and malicious names."""
+    # Remove path components
+    filename = os.path.basename(filename)
+    # Remove any remaining path separators
+    filename = filename.replace("..", "").replace("/", "").replace("\\", "")
+    # Limit length
+    name, ext = os.path.splitext(filename)
+    name = name[:100]
+    return f"{name}{ext}"
+
+async def validate_upload_file(file: UploadFile) -> None:
+    """Validate uploaded file for security."""
+    # Get file extension
+    _, ext = os.path.splitext(file.filename)
+    ext = ext.lower()
+    
+    # Check file extension
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File extension '{ext}' not allowed. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+        )
+    
+    # Check MIME type
+    if file.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File type '{file.content_type}' not allowed. Allowed types: images, PDF, Word, Excel, text files."
+        )
+    
+    # Validate MIME type matches extension (double-check for spoofing)
+    expected_extensions = MIME_TO_EXTENSIONS.get(file.content_type, set())
+    if expected_extensions and ext not in expected_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File extension '{ext}' does not match content type '{file.content_type}'"
+        )
+    
+    # Check file size
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File too large. Maximum size: {MAX_FILE_SIZE / (1024*1024)}MB"
+        )
+    
+    # Reset file pointer for later reading
+    await file.seek(0)
+    return content
 
 # Database Setup
 engine = create_engine(
@@ -163,6 +255,7 @@ class MessageModel(Base):
     sender_name = Column(String)
     sender_type = Column(String)
     content = Column(String)
+    attachments = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -352,10 +445,22 @@ class MessageResponse(BaseModel):
     sender_name: str
     sender_type: str
     content: str
+    attachments: Optional[List[dict]] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+    
+    @classmethod
+    def model_validate(cls, obj):
+        """Custom validator to parse JSON attachments field."""
+        if hasattr(obj, 'attachments') and obj.attachments:
+            if isinstance(obj.attachments, str):
+                try:
+                    obj.attachments = json.loads(obj.attachments)
+                except (json.JSONDecodeError, TypeError):
+                    obj.attachments = None
+        return super().model_validate(obj)
 
 
 class AuditLogResponse(BaseModel):
@@ -1923,19 +2028,65 @@ async def list_ticket_messages(
 @limiter.limit(RATE_LIMIT)
 async def create_ticket_message(
     ticket_id: str,
-    message: MessageCreate,
-    request: Request,
+    sender_name: str = Form(...),
+    sender_type: str = Form(...),
+    content: str = Form(...),
+    attachments: List[UploadFile] = File(default=[]),
+    request: Request = None,
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Create a message for a ticket."""
+    """Create a message for a ticket with optional file attachments."""
     try:
+        # Filter out empty files
+        attachments = [f for f in attachments if f.filename]
+        
+        # Validate number of files
+        if len(attachments) > MAX_FILES_PER_MESSAGE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Too many files. Maximum {MAX_FILES_PER_MESSAGE} files allowed."
+            )
+        
+        attachment_metadata = []
+        
+        # Validate and save files
+        for file in attachments:
+            # Validate file
+            content_bytes = await validate_upload_file(file)
+            
+            # Sanitize filename
+            safe_filename = sanitize_filename(file.filename)
+            unique_filename = f"{uuid.uuid4()}_{safe_filename}"
+            filepath = os.path.join(UPLOAD_DIR, unique_filename)
+            
+            # Ensure path is within UPLOAD_DIR (prevent path traversal)
+            abs_filepath = os.path.abspath(filepath)
+            abs_upload_dir = os.path.abspath(UPLOAD_DIR)
+            if not abs_filepath.startswith(abs_upload_dir):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid file path"
+                )
+            
+            # Save file
+            with open(filepath, "wb") as f:
+                f.write(content_bytes)
+            
+            attachment_metadata.append({
+                "name": safe_filename,
+                "type": file.content_type,
+                "size": len(content_bytes),
+                "path": unique_filename
+            })
+        
         db_message = MessageModel(
             id=str(uuid.uuid4()),
             ticket_id=ticket_id,
-            sender_name=message.sender_name,
-            sender_type=message.sender_type,
-            content=message.content,
+            sender_name=sender_name,
+            sender_type=sender_type,
+            content=content,
+            attachments=json.dumps(attachment_metadata) if attachment_metadata else None,
         )
         db.add(db_message)
         db.commit()
@@ -1951,8 +2102,25 @@ async def create_ticket_message(
             details="Message created",
             request=request,
         )
-
-        return db_message
+        
+        # Parse attachments JSON for response
+        parsed_attachments = None
+        if db_message.attachments:
+            try:
+                parsed_attachments = json.loads(db_message.attachments)
+            except (json.JSONDecodeError, TypeError):
+                parsed_attachments = None
+        
+        # Return response with parsed attachments
+        return MessageResponse(
+            id=db_message.id,
+            ticket_id=db_message.ticket_id,
+            sender_name=db_message.sender_name,
+            sender_type=db_message.sender_type,
+            content=db_message.content,
+            attachments=parsed_attachments,
+            created_at=db_message.created_at
+        )
     except Exception as e:
         log_audit_optional(
             current_user=current_user,
