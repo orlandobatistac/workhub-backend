@@ -244,9 +244,11 @@ class TicketModel(Base):
     description = Column(String)
     priority = Column(String, default="medium")
     status = Column(String, default="open")
+    resolution = Column(String, nullable=True)  # resolved, cancelled, duplicate, wontfix
     branch_id = Column(String, nullable=True)
     assignee_agent_id = Column(String, nullable=True)
     contact_id = Column(String, nullable=True)
+    due_date = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -405,20 +407,24 @@ class TicketCreate(BaseModel):
     subject: str = Field(..., min_length=1, max_length=200)
     description: str = Field(..., min_length=1, max_length=5000)
     priority: str = Field(default="medium", pattern="^(low|medium|high|critical)$")
-    status: str = Field(default="open", pattern="^(open|in_progress|closed|resolved|overdue)$")
+    status: str = Field(default="open", pattern="^(open|in_progress|closed)$")
+    resolution: Optional[str] = Field(None, pattern="^(resolved|cancelled|duplicate|wontfix)$")
     branch_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
     contact_id: Optional[str] = None
+    due_date: Optional[datetime] = None
 
 
 class TicketUpdate(BaseModel):
     subject: Optional[str] = None
     description: Optional[str] = None
     priority: Optional[str] = Field(None, pattern="^(low|medium|high|critical)$")
-    status: Optional[str] = Field(None, pattern="^(open|in_progress|closed|resolved|overdue)$")
+    status: Optional[str] = Field(None, pattern="^(open|in_progress|closed)$")
+    resolution: Optional[str] = Field(None, pattern="^(resolved|cancelled|duplicate|wontfix)$")
     branch_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
     contact_id: Optional[str] = None
+    due_date: Optional[datetime] = None
 
 
 class TicketResponse(BaseModel):
@@ -427,9 +433,11 @@ class TicketResponse(BaseModel):
     description: str
     priority: str
     status: str
+    resolution: Optional[str]
     branch_id: Optional[str]
     assignee_agent_id: Optional[str]
     contact_id: Optional[str]
+    due_date: Optional[datetime]
     created_at: datetime
     updated_at: datetime
 
@@ -825,7 +833,8 @@ async def seed_data(
         contacts = contacts_list if contacts_list else db.query(ContactModel).all()
         agents = agents_list if agents_list else db.query(AgentModel).all()
         
-        statuses = ["open", "in_progress", "closed", "resolved", "overdue"]
+        statuses = ["open", "in_progress", "closed"]
+        resolutions = ["resolved", "cancelled", "duplicate", "wontfix"]
         priorities = ["low", "medium", "high", "critical"]
         
         tickets = []
@@ -835,16 +844,31 @@ async def seed_data(
             # Assign agents to tickets (not all tickets get an agent)
             agent = agents[(idx - 1) % len(agents)] if agents and idx % 3 != 0 else None
             
+            status = statuses[idx % 3]
+            resolution = None
+            # Only assign resolution when status is closed
+            if status == "closed":
+                resolution = resolutions[(idx // 3) % 4]
+            
+            # Add due_date to some tickets (50% of tickets)
+            due_date = None
+            if idx % 2 == 0:
+                # Some overdue (past), some upcoming (future)
+                days_delta = (idx % 20) - 10  # Range from -10 to +10 days
+                due_date = datetime.now(timezone.utc) + timedelta(days=days_delta)
+            
             tickets.append(
                 TicketModel(
                     id=str(uuid.uuid4()),
                     subject=f"Issue #{idx}: {['Bug Fix', 'Feature Request', 'Enhancement', 'Support Request'][idx % 4]}",
-                    description=f"This is ticket #{idx}. Status: {statuses[idx % 4]}. Priority: {priorities[idx % 4]}",
+                    description=f"This is ticket #{idx}. Status: {status}. Priority: {priorities[idx % 4]}",
                     priority=priorities[idx % 4],
-                    status=statuses[idx % 4],
+                    status=status,
+                    resolution=resolution,
                     branch_id=branch.id if branch else None,
                     assignee_agent_id=agent.id if agent else None,
                     contact_id=contact.id if contact else None,
+                    due_date=due_date,
                 )
             )
         db.add_all(tickets)
@@ -855,16 +879,22 @@ async def seed_data(
         messages = []
         tickets = db.query(TicketModel).all()
         for ticket in tickets:
-            # Create contextual messages based on ticket status
-            status_messages = {
-                "open": "Ticket created and awaiting assignment.",
-                "in_progress": "Ticket assigned to agent. Work in progress.",
-                "closed": "Ticket closed by agent.",
-                "resolved": "Issue resolved successfully.",
-                "overdue": "Ticket is overdue and requires immediate attention.",
-            }
-            
-            message_content = status_messages.get(ticket.status, "Ticket created.")
+            # Create contextual messages based on ticket status and resolution
+            if ticket.status == "closed" and ticket.resolution:
+                resolution_messages = {
+                    "resolved": "Issue resolved successfully.",
+                    "cancelled": "Ticket cancelled by request.",
+                    "duplicate": "Ticket closed as duplicate.",
+                    "wontfix": "Ticket closed as won't fix.",
+                }
+                message_content = resolution_messages.get(ticket.resolution, "Ticket closed.")
+            else:
+                status_messages = {
+                    "open": "Ticket created and awaiting assignment.",
+                    "in_progress": "Ticket assigned to agent. Work in progress.",
+                    "closed": "Ticket closed.",
+                }
+                message_content = status_messages.get(ticket.status, "Ticket created.")
             
             messages.append(
                 MessageModel(
