@@ -1,12 +1,12 @@
-# Guía de Autenticación - WorkHub Backend
+# Authentication Guide - WorkHub Backend
 
-## Resumen
+## Summary
 
-El sistema ya tiene implementado autenticación JWT completa con los siguientes componentes:
+The system already has a complete JWT authentication implementation with the following components:
 
-## Tabla de Usuarios
+## Users Table
 
-**Tabla:** `users`
+**Table:** `users`
 
 ```sql
 CREATE TABLE users (
@@ -15,18 +15,18 @@ CREATE TABLE users (
     email VARCHAR UNIQUE NOT NULL,
     full_name VARCHAR NOT NULL,
     hashed_password VARCHAR NOT NULL,
-    role VARCHAR DEFAULT 'user',  -- valores: admin, agent, user
+    role VARCHAR DEFAULT 'user',  -- values: admin, agent, user
     is_active BOOLEAN DEFAULT true,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-## Endpoints Disponibles
+## Available Endpoints
 
-### 1. Registro de Usuario
+### 1. User Registration
 **POST** `/api/register`
 
-Crea una nueva cuenta de usuario en el sistema.
+Creates a new user account in the system.
 
 **Request Body:**
 ```json
@@ -39,11 +39,11 @@ Crea una nueva cuenta de usuario en el sistema.
 }
 ```
 
-**Validaciones:**
-- username: 3-50 caracteres
-- email: formato válido
-- full_name: 2-100 caracteres
-- password: mínimo 8 caracteres
+**Validations:**
+- username: 3-50 characters
+- email: valid format
+- full_name: 2-100 characters
+- password: minimum 8 characters
 - role: "admin" | "agent" | "user" (default: "user")
 
 **Response 201:**
@@ -59,16 +59,16 @@ Crea una nueva cuenta de usuario en el sistema.
 }
 ```
 
-**Errores:**
-- 400: Usuario o email ya existe
-- 422: Datos de validación incorrectos
+**Errors:**
+- 400: User or email already exists
+- 422: Invalid validation data
 
 ---
 
-### 2. Login (Obtener Token)
+### 2. Login (Get Token)
 **POST** `/api/token`
 
-Autentica al usuario y retorna un JWT token.
+Authenticates the user and returns a JWT token.
 
 **Request Body:**
 ```json
@@ -86,18 +86,18 @@ Autentica al usuario y retorna un JWT token.
 }
 ```
 
-**Errores:**
-- 401: Credenciales inválidas
-- 403: Usuario inactivo (is_active=false)
+**Errors:**
+- 401: Invalid credentials
+- 403: Inactive user (is_active=false)
 
-**Nota:** El token expira en 30 minutos (configurable en ACCESS_TOKEN_EXPIRE_MINUTES)
+**Note:** Token expires in 30 minutes (configurable via ACCESS_TOKEN_EXPIRE_MINUTES)
 
 ---
 
-### 3. Obtener Usuario Actual
+### 3. Get Current User
 **GET** `/api/me`
 
-Retorna información del usuario autenticado.
+Returns authenticated user information.
 
 **Headers:**
 ```
@@ -117,18 +117,18 @@ Authorization: Bearer <access_token>
 }
 ```
 
-**Errores:**
-- 401: Token inválido o expirado
-- 403: Usuario inactivo
+**Errors:**
+- 401: Invalid or expired token
+- 403: Inactive user
 
 ---
 
-## Integración Frontend
+## Frontend Integration
 
-### Flujo Completo de Autenticación
+### Complete Authentication Flow
 
 ```javascript
-// 1. REGISTRO (opcional - solo para nuevos usuarios)
+// 1. REGISTER (optional - for new users only)
 async function register(userData) {
   const response = await fetch('http://localhost:8000/api/register', {
     method: 'POST',
@@ -159,23 +159,23 @@ async function login(username, password) {
   });
   
   if (!response.ok) {
-    throw new Error('Credenciales inválidas');
+    throw new Error('Invalid credentials');
   }
   
   const data = await response.json();
   
-  // Guardar token en localStorage o sessionStorage
+  // Save token in localStorage or sessionStorage
   localStorage.setItem('access_token', data.access_token);
   
   return data;
 }
 
-// 3. OBTENER DATOS DEL USUARIO ACTUAL
+// 3. GET CURRENT USER DATA
 async function getCurrentUser() {
   const token = localStorage.getItem('access_token');
   
   if (!token) {
-    throw new Error('No autenticado');
+    throw new Error('Not authenticated');
   }
   
   const response = await fetch('http://localhost:8000/api/me', {
@@ -186,11 +186,11 @@ async function getCurrentUser() {
   
   if (!response.ok) {
     if (response.status === 401) {
-      // Token expirado o inválido
+      // Expired or invalid token
       localStorage.removeItem('access_token');
-      throw new Error('Sesión expirada');
+      throw new Error('Session expired');
     }
-    throw new Error('Error al obtener usuario');
+    throw new Error('Error fetching user');
   }
   
   return await response.json();
@@ -199,16 +199,16 @@ async function getCurrentUser() {
 // 4. LOGOUT
 function logout() {
   localStorage.removeItem('access_token');
-  // Redirigir a página de login
+  // Redirect to login page
   window.location.href = '/login';
 }
 
-// 5. FUNCIÓN HELPER PARA REQUESTS AUTENTICADOS
+// 5. HELPER FUNCTION FOR AUTHENTICATED REQUESTS
 async function authenticatedRequest(url, options = {}) {
   const token = localStorage.getItem('access_token');
   
   if (!token) {
-    throw new Error('No autenticado');
+    throw new Error('Not authenticated');
   }
   
   const headers = {
@@ -222,16 +222,16 @@ async function authenticatedRequest(url, options = {}) {
   });
   
   if (response.status === 401) {
-    // Token expirado
+    // Expired token
     localStorage.removeItem('access_token');
     window.location.href = '/login';
-    throw new Error('Sesión expirada');
+    throw new Error('Session expired');
   }
   
   return response;
 }
 
-// EJEMPLO DE USO
+// USAGE EXAMPLE
 async function loadTickets() {
   try {
     const response = await authenticatedRequest('http://localhost:8000/api/tickets');
@@ -245,7 +245,7 @@ async function loadTickets() {
 
 ---
 
-## Ejemplo Completo: Página de Login
+## Complete Example: Login Page
 
 ```html
 <!DOCTYPE html>
@@ -273,7 +273,7 @@ async function loadTickets() {
         <label>Password:</label>
         <input type="password" id="password" required>
       </div>
-      <button type="submit">Iniciar Sesión</button>
+      <button type="submit">Sign In</button>
       <div id="error" class="error"></div>
     </form>
   </div>
@@ -297,23 +297,23 @@ async function loadTickets() {
         });
         
         if (!response.ok) {
-          throw new Error('Credenciales inválidas');
+          throw new Error('Invalid credentials');
         }
         
         const { access_token, token_type } = await response.json();
         
-        // 2. Guardar token
+        // 2. Save token
         localStorage.setItem('access_token', access_token);
         
-        // 3. Obtener datos del usuario
+        // 3. Get user data
         const userResponse = await fetch('http://localhost:8000/api/me', {
           headers: { 'Authorization': `Bearer ${access_token}` }
         });
         
         const user = await userResponse.json();
         
-        // 4. Redirigir a dashboard
-        console.log('Usuario autenticado:', user);
+        // 4. Redirect to dashboard
+        console.log('Authenticated user:', user);
         window.location.href = '/dashboard.html';
         
       } catch (error) {
@@ -327,31 +327,31 @@ async function loadTickets() {
 
 ---
 
-## Roles de Usuario
+## User Roles
 
-El sistema soporta 3 roles:
+The system supports 3 roles:
 
-| Role | Descripción | Uso |
+| Role | Description | Use |
 |------|-------------|-----|
-| `user` | Usuario estándar | Puede crear tickets, ver sus propios tickets |
-| `agent` | Agente de soporte | Puede gestionar tickets asignados, responder mensajes |
-| `admin` | Administrador | Acceso completo al sistema |
+| `user` | Standard user | Can create tickets, view own tickets |
+| `agent` | Support agent | Can manage assigned tickets, respond to messages |
+| `admin` | Administrator | Full system access |
 
-Para implementar autorización por roles en endpoints específicos, usa el middleware `get_current_user` que ya está configurado.
-
----
-
-## Seguridad
-
-- **Password Hashing:** Bcrypt con salt automático
-- **Token JWT:** HS256 algorithm
-- **Token Expiration:** 30 minutos (configurable)
-- **Rate Limiting:** 100 requests/min por IP
-- **Audit Log:** Todos los intentos de login/registro se registran
+To implement role-based authorization on specific endpoints, use the `get_current_user` middleware that is already configured.
 
 ---
 
-## Variables de Entorno
+## Security
+
+- **Password Hashing:** Bcrypt with automatic salt
+- **JWT Token:** HS256 algorithm
+- **Token Expiration:** 30 minutes (configurable)
+- **Rate Limiting:** 100 requests/min per IP
+- **Audit Log:** All login/registration attempts are logged
+
+---
+
+## Environment Variables
 
 ```bash
 SECRET_KEY="your-secret-key-here-change-in-production"
@@ -363,7 +363,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 ## Testing
 
 ```bash
-# 1. Registrar usuario de prueba
+# 1. Register test user
 curl -X POST http://localhost:8000/api/register \
   -H "Content-Type: application/json" \
   -d '{
@@ -381,7 +381,7 @@ curl -X POST http://localhost:8000/api/token \
     "password": "TestPass123!"
   }'
 
-# 3. Usar token (reemplazar <TOKEN>)
+# 3. Use token (replace <TOKEN>)
 curl -X GET http://localhost:8000/api/me \
   -H "Authorization: Bearer <TOKEN>"
 ```
@@ -390,14 +390,15 @@ curl -X GET http://localhost:8000/api/me \
 
 ## FAQ
 
-**P: ¿Cómo renovar un token expirado?**  
-R: El usuario debe hacer login nuevamente con `/api/token`. Para implementar refresh tokens, se requeriría desarrollo adicional.
+**Q: How to renew an expired token?**  
+A: Users must login again with `/api/token`. Implementing refresh tokens would require additional development.
 
-**P: ¿Cómo cerrar sesión?**  
-R: Simplemente elimina el token del localStorage en el frontend. El token expirará automáticamente en el servidor.
+**Q: How to logout?**  
+A: Simply remove the token from localStorage on the frontend. The token will automatically expire on the server.
 
-**P: ¿Puedo cambiar la duración del token?**  
-R: Sí, modifica `ACCESS_TOKEN_EXPIRE_MINUTES` en la configuración.
+**Q: Can I change the token duration?**  
+A: Yes, modify `ACCESS_TOKEN_EXPIRE_MINUTES` in the configuration.
 
-**P: ¿Cómo resetear contraseña?**  
-R: Actualmente no está implementado. Se requeriría agregar endpoints para solicitar reset y confirmar con email.
+**Q: How to reset password?**  
+A: Currently not implemented. Would require adding endpoints to request reset and confirm via email.
+
