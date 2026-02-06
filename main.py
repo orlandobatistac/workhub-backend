@@ -40,8 +40,12 @@ ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 RATE_LIMIT = os.getenv("RATE_LIMIT", "100/minute")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./workhub.db")
-ALLOWED_ORIGINS_STR = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000,https://friendly-winner-v6xg6vv757qcwv55-5000.app.github.dev")
+ALLOWED_ORIGINS_STR = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000,http://localhost:5000")
 ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_STR.split(",")]
+
+# By default, accepts all origins ending in .github.dev
+# Useful for development in GitHub Codespaces
+CORS_PATTERN = os.getenv("CORS_PATTERN", r"https?://(localhost|.*\.github\.dev)")
 
 # File Upload Setup
 UPLOAD_DIR = "uploads/tickets"
@@ -545,7 +549,7 @@ async def add_security_headers(request: Request, call_next):
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,  # Restrict to specific origins
+    allow_origin_regex=CORS_PATTERN,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
