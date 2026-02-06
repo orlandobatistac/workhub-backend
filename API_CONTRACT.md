@@ -36,6 +36,20 @@
 }
 ```
 
+## User Model
+
+```json
+{
+  "id": "integer",
+  "username": "string (3-50 chars, unique)",
+  "email": "string (email format, unique)",
+  "full_name": "string (2-100 chars)",
+  "role": "user | agent | admin",
+  "is_active": "boolean",
+  "created_at": "ISO8601"
+}
+```
+
 ## Endpoints
 
 ### Create Ticket
@@ -75,6 +89,17 @@
 
 ### Delete Contact
 `DELETE /api/contacts/{contact_id}` → 204 No Content
+
+## Authentication Endpoints
+
+### Register User
+`POST /api/register` → Creates new user account. Fields: username, email, full_name, password, role (default: "user")
+
+### Login (Get Token)
+`POST /api/token` → Returns JWT token. Body: `{username, password}` → Response: `{access_token, token_type}`
+
+### Get Current User
+`GET /api/me` → Returns authenticated user info (requires Bearer token)
 
 ## Statuses | Resolutions | Validations
 
@@ -146,4 +171,27 @@ POST /api/tickets
 POST /api/contacts
 { contact_id: "CT-001", name: "John Doe", email: "john@example.com", phone: "+1-555-1234", primary_branch_id: "uuid" }
 // → 201 { id, contact_id, name, email, phone, primary_branch_id, created_at }
+```
+
+**Register & Login Flow:**
+```javascript
+// 1. Register new user
+POST /api/register
+{ username: "john", email: "john@example.com", full_name: "John Doe", password: "Pass123!", role: "user" }
+// → 201 { id, username, email, full_name, role, is_active, created_at }
+
+// 2. Login to get token
+POST /api/token
+{ username: "john", password: "Pass123!" }
+// → 200 { access_token: "eyJ...", token_type: "bearer" }
+
+// 3. Use token for authenticated requests
+GET /api/me
+Headers: { Authorization: "Bearer eyJ..." }
+// → 200 { id, username, email, full_name, role, is_active, created_at }
+
+// 4. Access protected resources
+GET /api/tickets
+Headers: { Authorization: "Bearer eyJ..." }
+// → 200 { data: [...], pagination: {...} }
 ```

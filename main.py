@@ -1121,6 +1121,16 @@ async def get_test_token(
     }
 
 
+@app.get("/api/me", response_model=UserResponse, tags=["Authentication"])
+@limiter.limit(RATE_LIMIT)
+async def get_current_user_info(
+    request: Request,
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Get current authenticated user information."""
+    return current_user
+
+
 # ============================================================================
 # AUDIT LOG ENDPOINTS
 # ============================================================================
