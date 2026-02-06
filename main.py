@@ -10,7 +10,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Request, Form, Uplo
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, ForeignKey, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
@@ -1006,7 +1006,12 @@ async def register(user: UserCreate, request: Request, db: Session = Depends(get
 async def login(credentials: LoginRequest, request: Request, db: Session = Depends(get_db)):
     """Login and get access token."""
     try:
-        user = db.query(UserModel).filter(UserModel.username == credentials.username).first()
+        user = db.query(UserModel).filter(
+            or_(
+                UserModel.username == credentials.username,
+                UserModel.email == credentials.username,
+            )
+        ).first()
         
         if not user or not verify_password(credentials.password, user.hashed_password):
             log_audit(
@@ -2195,9 +2200,31 @@ async def create_ticket_message(
 # STARTUP EVENT - SEED DATA
 # ============================================================================
 
+def ensure_contact_columns() -> None:
+    if not DATABASE_URL.startswith("sqlite:///"):
+        return
+
+    db_path = DATABASE_URL.replace("sqlite:///", "", 1)
+    if not db_path:
+        return
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute("PRAGMA table_info(contacts)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "email" not in columns:
+            conn.execute("ALTER TABLE contacts ADD COLUMN email VARCHAR")
+        if "phone" not in columns:
+            conn.execute("ALTER TABLE contacts ADD COLUMN phone VARCHAR")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @app.on_event("startup")
 def startup_event():
     """Create seed data on startup."""
+    ensure_contact_columns()
     db = SessionLocal()
     
     # Check if admin user already exists
