@@ -6,10 +6,10 @@ from typing import Optional, List, Any
 import json
 from functools import lru_cache
 
-from fastapi import FastAPI, Depends, HTTPException, status, Request, Form, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Form, UploadFile, File, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, ForeignKey, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -270,6 +270,29 @@ class MessageModel(Base):
 # Create tables
 Base.metadata.create_all(bind=engine)
 
+# ---------------------------------------------------------------------------
+# Helper: Apply sorting safely to SQLAlchemy queries
+# ---------------------------------------------------------------------------
+
+def apply_sorting(query, model, sort_by: Optional[str], sort_order: Optional[str]):
+    """Apply ordering to a SQLAlchemy query using a validated column name.
+
+    - Ensures only real column names are accepted (prevents injection).
+    - Returns the ordered query.
+    """
+    if not sort_by:
+        return query
+
+    # Allowed columns are the table's column names
+    allowed = {c.name for c in model.__table__.columns}
+    if sort_by not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid sort_by: {sort_by}. Allowed: {', '.join(sorted(allowed))}")
+
+    column = getattr(model, sort_by)
+    if sort_order and sort_order.lower() == "desc":
+        return query.order_by(column.desc())
+    return query.order_by(column.asc())
+
 # ============================================================================
 # PYDANTIC SCHEMAS
 # ============================================================================
@@ -454,8 +477,7 @@ class TicketResponse(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    sender_name: str = Field(..., min_length=1, max_length=100)
-    sender_type: str = Field(..., pattern="^(user|agent|system)$")
+    """Schema for message creation (Note: sender fields are derived server-side from auth)."""
     content: str = Field(..., min_length=1, max_length=10000)
 
 
@@ -1222,13 +1244,23 @@ async def list_branches(
     request: Request,
     page: int = 1,
     limit: int = 10,
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = None,
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """List all branches."""
     offset = (page - 1) * limit
-    total = db.query(BranchModel).count()
-    branches = db.query(BranchModel).offset(offset).limit(limit).all()
+    base_query = db.query(BranchModel)
+    total = base_query.count()
+
+    # Apply sorting if requested
+    if sort_by:
+        if sort_order and sort_order.lower() not in ("asc", "desc"):
+            raise HTTPException(status_code=400, detail="sort_order must be 'asc' or 'desc'")
+        base_query = apply_sorting(base_query, BranchModel, sort_by, sort_order)
+
+    branches = base_query.offset(offset).limit(limit).all()
 
     data = [BranchResponse.model_validate(branch) for branch in branches]
 
@@ -1397,13 +1429,22 @@ async def list_agents(
     request: Request,
     page: int = 1,
     limit: int = 10,
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = None,
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """List all agents."""
     offset = (page - 1) * limit
-    total = db.query(AgentModel).count()
-    agents = db.query(AgentModel).offset(offset).limit(limit).all()
+    base_query = db.query(AgentModel)
+    total = base_query.count()
+
+    if sort_by:
+        if sort_order and sort_order.lower() not in ("asc", "desc"):
+            raise HTTPException(status_code=400, detail="sort_order must be 'asc' or 'desc'")
+        base_query = apply_sorting(base_query, AgentModel, sort_by, sort_order)
+
+    agents = base_query.offset(offset).limit(limit).all()
 
     data = [AgentResponse.model_validate(agent) for agent in agents]
     
@@ -1572,13 +1613,22 @@ async def list_workgroups(
     request: Request,
     page: int = 1,
     limit: int = 10,
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = None,
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """List all workgroups."""
     offset = (page - 1) * limit
-    total = db.query(WorkgroupModel).count()
-    workgroups = db.query(WorkgroupModel).offset(offset).limit(limit).all()
+    base_query = db.query(WorkgroupModel)
+    total = base_query.count()
+
+    if sort_by:
+        if sort_order and sort_order.lower() not in ("asc", "desc"):
+            raise HTTPException(status_code=400, detail="sort_order must be 'asc' or 'desc'")
+        base_query = apply_sorting(base_query, WorkgroupModel, sort_by, sort_order)
+
+    workgroups = base_query.offset(offset).limit(limit).all()
 
     data = [WorkgroupResponse.model_validate(workgroup) for workgroup in workgroups]
     
@@ -1747,13 +1797,22 @@ async def list_contacts(
     request: Request,
     page: int = 1,
     limit: int = 10,
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = None,
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """List all contacts."""
     offset = (page - 1) * limit
-    total = db.query(ContactModel).count()
-    contacts = db.query(ContactModel).offset(offset).limit(limit).all()
+    base_query = db.query(ContactModel)
+    total = base_query.count()
+
+    if sort_by:
+        if sort_order and sort_order.lower() not in ("asc", "desc"):
+            raise HTTPException(status_code=400, detail="sort_order must be 'asc' or 'desc'")
+        base_query = apply_sorting(base_query, ContactModel, sort_by, sort_order)
+
+    contacts = base_query.offset(offset).limit(limit).all()
 
     data = [ContactResponse.model_validate(contact) for contact in contacts]
     
@@ -1922,13 +1981,31 @@ async def list_tickets(
     request: Request,
     page: int = 1,
     limit: int = 10,
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = None,
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """List all tickets."""
+    """List all tickets.
+
+    Defaults: sort_by=updated_at, sort_order=desc when parameters are omitted.
+    """
     offset = (page - 1) * limit
-    total = db.query(TicketModel).count()
-    tickets = db.query(TicketModel).offset(offset).limit(limit).all()
+    base_query = db.query(TicketModel)
+    total = base_query.count()
+
+    # Default ordering for tickets when not provided
+    if not sort_by:
+        sort_by = "updated_at"
+    if not sort_order:
+        sort_order = "desc"
+
+    if sort_order and sort_order.lower() not in ("asc", "desc"):
+        raise HTTPException(status_code=400, detail="sort_order must be 'asc' or 'desc'")
+
+    base_query = apply_sorting(base_query, TicketModel, sort_by, sort_order)
+
+    tickets = base_query.offset(offset).limit(limit).all()
 
     data = [TicketResponse.model_validate(ticket) for ticket in tickets]
     
@@ -2058,19 +2135,22 @@ async def list_ticket_messages(
     request: Request,
     page: int = 1,
     limit: int = 10,
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = None,
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """List messages for a ticket."""
     offset = (page - 1) * limit
-    total = db.query(MessageModel).filter(MessageModel.ticket_id == ticket_id).count()
-    messages = (
-        db.query(MessageModel)
-        .filter(MessageModel.ticket_id == ticket_id)
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
+    base_query = db.query(MessageModel).filter(MessageModel.ticket_id == ticket_id)
+    total = base_query.count()
+
+    if sort_by:
+        if sort_order and sort_order.lower() not in ("asc", "desc"):
+            raise HTTPException(status_code=400, detail="sort_order must be 'asc' or 'desc'")
+        base_query = apply_sorting(base_query, MessageModel, sort_by, sort_order)
+
+    messages = base_query.offset(offset).limit(limit).all()
 
     data = [MessageResponse.model_validate(message) for message in messages]
 
@@ -2089,8 +2169,6 @@ async def list_ticket_messages(
 @limiter.limit(RATE_LIMIT)
 async def create_ticket_message(
     ticket_id: str,
-    sender_name: str = Form(...),
-    sender_type: str = Form(...),
     content: str = Form(...),
     attachments: List[UploadFile] = File(default=[]),
     request: Request = None,
@@ -2099,6 +2177,15 @@ async def create_ticket_message(
 ):
     """Create a message for a ticket with optional file attachments."""
     try:
+        # Derive sender information from authenticated user
+        if current_user:
+            sender_name = current_user.full_name or current_user.username
+            sender_type = "user" if current_user.role == "user" else "agent"
+        else:
+            # Allow unauthenticated messages as anonymous users
+            sender_name = "Anonymous"
+            sender_type = "user"
+        
         # Filter out empty files
         attachments = [f for f in attachments if f.filename]
         
@@ -2138,7 +2225,8 @@ async def create_ticket_message(
                 "name": safe_filename,
                 "type": file.content_type,
                 "size": len(content_bytes),
-                "path": unique_filename
+                "path": unique_filename,
+                "url": f"/api/attachments/tickets/{unique_filename}"
             })
         
         db_message = MessageModel(
@@ -2197,6 +2285,48 @@ async def create_ticket_message(
 
 
 # ============================================================================
+# ATTACHMENT DOWNLOAD ENDPOINT
+# ============================================================================
+
+@app.get("/api/attachments/tickets/{path}", tags=["Attachments"])
+@limiter.limit(RATE_LIMIT)
+async def download_attachment(
+    path: str,
+    request: Request,
+    current_user: Optional[UserModel] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """Download a ticket attachment file."""
+    # Security: prevent path traversal
+    if ".." in path or "/" in path or "\\" in path:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    
+    # Construct full path
+    filepath = os.path.join(UPLOAD_DIR, path)
+    
+    # Ensure path is within UPLOAD_DIR (prevent path traversal)
+    abs_filepath = os.path.abspath(filepath)
+    abs_upload_dir = os.path.abspath(UPLOAD_DIR)
+    if not abs_filepath.startswith(abs_upload_dir):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    
+    # Check if file exists
+    if not os.path.isfile(filepath):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Extract original filename (after UUID prefix)
+    # Format is: {uuid}_{original_name}
+    original_name = "_".join(path.split("_")[1:]) if "_" in path else path
+    
+    # Return file with proper headers
+    return FileResponse(
+        path=filepath,
+        filename=original_name,
+        media_type=None  # Let FileResponse infer from file extension
+    )
+
+
+# ============================================================================
 # STARTUP EVENT - SEED DATA
 # ============================================================================
 
@@ -2252,6 +2382,19 @@ def startup_event():
             is_active=True,
         )
         db.add(agent)
+    
+    # Check if demo user already exists
+    user_exists = db.query(UserModel).filter(UserModel.username == "user").first()
+    if not user_exists:
+        user = UserModel(
+            username="user",
+            email="user@workhub.com",
+            full_name="Demo User",
+            hashed_password=get_password_hash("user123"),
+            role="user",
+            is_active=True,
+        )
+        db.add(user)
     
     db.commit()
     db.close()

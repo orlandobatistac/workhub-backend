@@ -59,7 +59,7 @@
 `GET /api/tickets/{ticket_id}` → Returns ticket object | 404 if not found
 
 ### List Tickets
-`GET /api/tickets?page=1&limit=10` → Returns `{data: Ticket[], pagination: {page, limit, total, totalPages}}`
+`GET /api/tickets?page=1&limit=10&sort_by={field}&sort_order={asc|desc}` → Returns `{data: Ticket[], pagination: {page, limit, total, totalPages}}`. Defaults: `sort_by=updated_at`, `sort_order=desc` when params are omitted.
 
 ### Update Ticket
 `PUT /api/tickets/{ticket_id}` → All fields optional | Returns updated ticket
@@ -68,10 +68,54 @@
 `DELETE /api/tickets/{ticket_id}` → 204 No Content
 
 ### List Messages
-`GET /api/tickets/{ticket_id}/messages?page=1&limit=10` → Returns paginated messages
+`GET /api/tickets/{ticket_id}/messages?page=1&limit=10&sort_by={field}&sort_order={asc|desc}` → Returns paginated messages (optional sorting).
+
+Each message object includes an `attachments` field (nullable) which, when present, is an array of attachment objects with the following structure:
+
+- `name` (string): original filename uploaded by the sender
+- `type` (string): MIME type of the file (e.g., `application/pdf`)
+- `size` (integer): size in bytes
+- `path` (string): stored filename on the server (unique, usable to reference the file)
+- `url` (string, optional): relative URL to access the file (see note below)
+
+Example message object:
+
+```json
+{
+  "id": "uuid",
+  "ticket_id": "uuid",
+  "sender_name": "John Doe",
+  "sender_type": "user",
+  "content": "Here is the file",
+  "attachments": [
+    {"name": "report.pdf", "type": "application/pdf", "size": 12345, "path": "<uuid>_report.pdf", "url": "/uploads/tickets/<uuid>_report.pdf"}
+  ],
+  "created_at": "ISO8601"
+}
+```
+
 
 ### Create Message
-`POST /api/tickets/{ticket_id}/messages` → Multipart form data (sender_name, sender_type, content, attachments[])
+`POST /api/tickets/{ticket_id}/messages` → Multipart form data (field: `content`) and files in `attachments` (optional).
+
+- **Sender identification**: `sender_name` and `sender_type` are derived server-side from the authenticated user (via JWT token):
+  - `sender_name`: Uses the authenticated user's `full_name` (or `username` if `full_name` is empty)
+  - `sender_type`: `"user"` if user role is `"user"`, otherwise `"agent"` (for `"agent"` or `"admin"` roles)
+  - Unauthenticated requests: `sender_name="Anonymous"`, `sender_type="user"`
+- Validation: max files = 5, max file size = 10MB, allowed MIME types are enforced. If validation fails, a `400` error is returned.
+- Response: returns the created message object including the parsed `attachments` metadata (see example above).
+
+Example curl (multipart upload with authentication):
+
+```bash
+curl -X POST "http://localhost:8000/api/tickets/<ticket_id>/messages" \
+  -H "Authorization: Bearer <your-jwt-token>" \
+  -F "content=Please see attached" \
+  -F "attachments=@./file1.pdf" \
+  -F "attachments=@./image.png"
+```
+
+**Note on downloading attachments:** files are stored on disk under `uploads/tickets/{path}`. The API stores attachment metadata in the message; however, serving files over HTTP requires the server to expose the `uploads` directory (for example by mounting it as static files or adding an endpoint that returns a `FileResponse`). If you need, we can implement a secure download endpoint (e.g., `GET /api/uploads/tickets/{filename}`) that validates access and streams files.
 
 ## Contact Endpoints
 
@@ -79,7 +123,7 @@
 `POST /api/contacts` → Fields: contact_id, name, primary_branch_id, email (optional), phone (optional)
 
 ### List Contacts
-`GET /api/contacts?page=1&limit=10` → Returns paginated contacts
+`GET /api/contacts?page=1&limit=10&sort_by={field}&sort_order={asc|desc}` → Returns paginated contacts (optional sorting).
 
 ### Get Contact
 `GET /api/contacts/{contact_id}` → Returns contact object | 404 if not found
