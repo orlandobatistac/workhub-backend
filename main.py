@@ -405,7 +405,7 @@ class TicketCreate(BaseModel):
     subject: str = Field(..., min_length=1, max_length=200)
     description: str = Field(..., min_length=1, max_length=5000)
     priority: str = Field(default="medium", pattern="^(low|medium|high|critical)$")
-    status: str = Field(default="open", pattern="^(open|in_progress|closed|resolved)$")
+    status: str = Field(default="open", pattern="^(open|in_progress|closed|resolved|overdue)$")
     branch_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
     contact_id: Optional[str] = None
@@ -415,7 +415,7 @@ class TicketUpdate(BaseModel):
     subject: Optional[str] = None
     description: Optional[str] = None
     priority: Optional[str] = Field(None, pattern="^(low|medium|high|critical)$")
-    status: Optional[str] = Field(None, pattern="^(open|in_progress|closed|resolved)$")
+    status: Optional[str] = Field(None, pattern="^(open|in_progress|closed|resolved|overdue)$")
     branch_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
     contact_id: Optional[str] = None
@@ -825,7 +825,7 @@ async def seed_data(
         contacts = contacts_list if contacts_list else db.query(ContactModel).all()
         agents = agents_list if agents_list else db.query(AgentModel).all()
         
-        statuses = ["open", "in_progress", "closed", "resolved"]
+        statuses = ["open", "in_progress", "closed", "resolved", "overdue"]
         priorities = ["low", "medium", "high", "critical"]
         
         tickets = []
@@ -861,6 +861,7 @@ async def seed_data(
                 "in_progress": "Ticket assigned to agent. Work in progress.",
                 "closed": "Ticket closed by agent.",
                 "resolved": "Issue resolved successfully.",
+                "overdue": "Ticket is overdue and requires immediate attention.",
             }
             
             message_content = status_messages.get(ticket.status, "Ticket created.")
