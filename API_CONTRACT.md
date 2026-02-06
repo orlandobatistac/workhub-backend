@@ -21,6 +21,21 @@
 }
 ```
 
+## Contact Model
+
+```json
+{
+  "id": "uuid",
+  "contact_id": "string (unique, e.g., CT-001)",
+  "name": "string (1-100 chars)",
+  "email": "string email format (optional)",
+  "phone": "string (7-20 chars, optional)",
+  "primary_branch_id": "uuid",
+  "external_id": "string (optional)",
+  "created_at": "ISO8601"
+}
+```
+
 ## Endpoints
 
 ### Create Ticket
@@ -44,6 +59,23 @@
 ### Create Message
 `POST /api/tickets/{ticket_id}/messages` → Multipart form data (sender_name, sender_type, content, attachments[])
 
+## Contact Endpoints
+
+### Create Contact
+`POST /api/contacts` → Fields: contact_id, name, primary_branch_id, email (optional), phone (optional)
+
+### List Contacts
+`GET /api/contacts?page=1&limit=10` → Returns paginated contacts
+
+### Get Contact
+`GET /api/contacts/{contact_id}` → Returns contact object | 404 if not found
+
+### Update Contact
+`PUT /api/contacts/{contact_id}` → All fields optional | Returns updated contact
+
+### Delete Contact
+`DELETE /api/contacts/{contact_id}` → 204 No Content
+
 ## Statuses | Resolutions | Validations
 
 **Valid Statuses:** `open` (new) | `in_progress` (assigned) | `closed` (complete)
@@ -58,6 +90,10 @@
 - resolution: `^(resolved|cancelled|duplicate|wontfix)$`
 - due_date: ISO8601 format
 - UUIDs: branch_id, assignee_agent_id, contact_id
+- contact_id: 1-50 chars (unique)
+- contact name: 1-100 chars
+- email: Valid email format (optional), pattern: `^[\w\.-]+@[\w\.-]+\.\w+$`
+- phone: 7-20 chars (optional)
 
 **Important:** `resolution` is ignored if `status != 'closed'`. Calculate overdue on frontend: `due_date < now && status != 'closed'`
 
@@ -103,4 +139,11 @@ GET /api/tickets?page=1&limit=20
 POST /api/tickets
 { subject: "Bug", description: "...", status: "resolved" }  // ❌ Invalid status
 // → 400 { message: "Invalid request data", status: 400 }
+```
+
+**Create Contact with Email:**
+```javascript
+POST /api/contacts
+{ contact_id: "CT-001", name: "John Doe", email: "john@example.com", phone: "+1-555-1234", primary_branch_id: "uuid" }
+// → 201 { id, contact_id, name, email, phone, primary_branch_id, created_at }
 ```

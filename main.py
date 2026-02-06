@@ -231,6 +231,8 @@ class ContactModel(Base):
     id = Column(String, primary_key=True, index=True)
     contact_id = Column(String, unique=True, index=True)
     name = Column(String, index=True)
+    email = Column(String, nullable=True, index=True)
+    phone = Column(String, nullable=True)
     primary_branch_id = Column(String)
     external_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -380,6 +382,8 @@ class WorkgroupResponse(BaseModel):
 class ContactCreate(BaseModel):
     contact_id: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=100)
+    email: Optional[str] = Field(None, pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
+    phone: Optional[str] = Field(None, min_length=7, max_length=20)
     primary_branch_id: str = Field(..., min_length=1)
     external_id: Optional[str] = None
 
@@ -387,6 +391,8 @@ class ContactCreate(BaseModel):
 class ContactUpdate(BaseModel):
     contact_id: Optional[str] = None
     name: Optional[str] = None
+    email: Optional[str] = Field(None, pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
+    phone: Optional[str] = Field(None, min_length=7, max_length=20)
     primary_branch_id: Optional[str] = None
     external_id: Optional[str] = None
 
@@ -395,6 +401,8 @@ class ContactResponse(BaseModel):
     id: str
     contact_id: str
     name: str
+    email: Optional[str]
+    phone: Optional[str]
     primary_branch_id: str
     external_id: Optional[str]
     created_at: datetime
@@ -820,6 +828,8 @@ async def seed_data(
                     id=str(uuid.uuid4()),
                     contact_id=f"CT-{idx:03d}",
                     name=f"Contact {idx}",
+                    email=f"contact{idx}@example.com" if idx % 2 == 0 else None,
+                    phone=f"+1-555-{1000 + idx:04d}" if idx % 3 == 0 else None,
                     primary_branch_id=branch.id if branch else None,
                     external_id=None,
                 )
