@@ -404,8 +404,8 @@ class ContactResponse(BaseModel):
 class TicketCreate(BaseModel):
     subject: str = Field(..., min_length=1, max_length=200)
     description: str = Field(..., min_length=1, max_length=5000)
-    priority: str = Field(default="medium")
-    status: str = Field(default="open")
+    priority: str = Field(default="medium", pattern="^(low|medium|high|critical)$")
+    status: str = Field(default="open", pattern="^(open|in_progress|closed|resolved)$")
     branch_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
     contact_id: Optional[str] = None
@@ -414,8 +414,8 @@ class TicketCreate(BaseModel):
 class TicketUpdate(BaseModel):
     subject: Optional[str] = None
     description: Optional[str] = None
-    priority: Optional[str] = None
-    status: Optional[str] = None
+    priority: Optional[str] = Field(None, pattern="^(low|medium|high|critical)$")
+    status: Optional[str] = Field(None, pattern="^(open|in_progress|closed|resolved)$")
     branch_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
     contact_id: Optional[str] = None
