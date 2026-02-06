@@ -23,7 +23,7 @@ from slowapi.errors import RateLimitExceeded
 
 # Load environment variables (optional - works without .env file)
 try:
-    from python_dotenv import load_dotenv
+    from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
@@ -46,6 +46,9 @@ ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_STR.split(",")]
 # By default, accepts all origins ending in .github.dev
 # Useful for development in GitHub Codespaces
 CORS_PATTERN = os.getenv("CORS_PATTERN", r"https?://(localhost|.*\.github\.dev)")
+
+# Allowed origins specific list
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",") if os.getenv("ALLOWED_ORIGINS") else []
 
 # File Upload Setup
 UPLOAD_DIR = "uploads/tickets"
@@ -103,21 +106,21 @@ async def validate_upload_file(file: UploadFile) -> None:
     # Get file extension
     _, ext = os.path.splitext(file.filename)
     ext = ext.lower()
-    
+
     # Check file extension
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File extension '{ext}' not allowed. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
         )
-    
+
     # Check MIME type
     if file.content_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File type '{file.content_type}' not allowed. Allowed types: images, PDF, Word, Excel, text files."
         )
-    
+
     # Validate MIME type matches extension (double-check for spoofing)
     expected_extensions = MIME_TO_EXTENSIONS.get(file.content_type, set())
     if expected_extensions and ext not in expected_extensions:
@@ -125,7 +128,7 @@ async def validate_upload_file(file: UploadFile) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File extension '{ext}' does not match content type '{file.content_type}'"
         )
-    
+
     # Check file size
     content = await file.read()
     if len(content) > MAX_FILE_SIZE:
@@ -133,7 +136,7 @@ async def validate_upload_file(file: UploadFile) -> None:
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"File too large. Maximum size: {MAX_FILE_SIZE / (1024*1024)}MB"
         )
-    
+
     # Reset file pointer for later reading
     await file.seek(0)
     return content
@@ -167,7 +170,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 class UserModel(Base):
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     email = Column(String, unique=True, index=True)
@@ -180,7 +183,7 @@ class UserModel(Base):
 
 class AuditLogModel(Base):
     __tablename__ = "audit_logs"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=True)
     username = Column(String)
@@ -304,7 +307,7 @@ class UserCreate(BaseModel):
     full_name: str = Field(..., min_length=2, max_length=100, description="Full name required")
     password: str = Field(..., min_length=8, description="Password must be at least 8 characters")
     role: str = "user"
-    
+
     model_config = {"json_schema_extra": {"example": {"username": "john_doe", "email": "john@example.com", "full_name": "John Doe", "password": "SecurePass123!"}}}
 
 
@@ -505,7 +508,7 @@ class MessageResponse(BaseModel):
 
     class Config:
         from_attributes = True
-    
+
     @classmethod
     def model_validate(cls, obj):
         """Custom validator to parse JSON attachments field."""
@@ -600,7 +603,8 @@ async def add_security_headers(request: Request, call_next):
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=CORS_PATTERN,
+    allow_origins=ALLOWED_ORIGINS,  # Lista específica de orígenes
+    allow_origin_regex=CORS_PATTERN,  # Patrón regex adicional
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -619,7 +623,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         expire = datetime.now(timezone.utc) + expires_delta
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=15)
-    
+
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
@@ -641,18 +645,18 @@ async def get_current_user(request: Request, db: Session = Depends(get_db)) -> U
         detail="Invalid credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
+
     auth_header = request.headers.get("Authorization")
     if not auth_header:
         raise credentials_exception
-    
+
     try:
         scheme, token = auth_header.split()
         if scheme.lower() != "bearer":
             raise credentials_exception
     except ValueError:
         raise credentials_exception
-    
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
@@ -660,14 +664,14 @@ async def get_current_user(request: Request, db: Session = Depends(get_db)) -> U
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-    
+
     user = db.query(UserModel).filter(UserModel.username == username).first()
     if user is None:
         raise credentials_exception
-    
+
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User inactive")
-    
+
     return user
 
 
@@ -725,28 +729,28 @@ def require_agent_or_admin(current_user: Optional[UserModel]):
 
 def can_access_ticket(ticket: TicketModel, current_user: Optional[UserModel]) -> bool:
     """Check if the current user can access the given ticket.
-    
+
     Rules:
     - Admin and agent: can access all tickets
     - User: can only access their own tickets (created_by_id)
     """
     if not current_user:
         return False
-    
+
     # Admin and agent can see all tickets
     if current_user.role in ["admin", "agent"]:
         return True
-    
+
     # User can only see their own tickets
     if current_user.role == "user":
         return ticket.created_by_id == current_user.id
-    
+
     return False
 
 
 def can_modify_ticket(ticket: TicketModel, current_user: Optional[UserModel]) -> bool:
     """Check if the current user can modify the given ticket.
-    
+
     Rules:
     - Admin: can modify all tickets
     - Agent: can modify all tickets
@@ -754,19 +758,19 @@ def can_modify_ticket(ticket: TicketModel, current_user: Optional[UserModel]) ->
     """
     if not current_user:
         return False
-    
+
     # Admin can modify all tickets
     if current_user.role == "admin":
         return True
-    
+
     # Agent can modify all tickets
     if current_user.role == "agent":
         return True
-    
+
     # User can only modify their own tickets
     if current_user.role == "user":
         return ticket.created_by_id == current_user.id
-    
+
     return False
 
 
@@ -794,7 +798,7 @@ def log_audit(
     )
     db.add(audit_log)
     db.commit()
-    
+
     # Also log to file
     with open("audit.log", "a") as f:
         f.write(
@@ -875,7 +879,7 @@ async def seed_data(
     workgroups_list = []
     agents_list = []
     contacts_list = []
-    
+
     # Create demo users first (for ticket ownership)
     if db.query(UserModel).count() == 0:
         users = [
@@ -999,11 +1003,11 @@ async def seed_data(
         contacts = contacts_list if contacts_list else db.query(ContactModel).all()
         agents = agents_list if agents_list else db.query(AgentModel).all()
         users = users_list if users_list else db.query(UserModel).all()
-        
+
         statuses = ["open", "in_progress", "closed"]
         resolutions = ["resolved", "cancelled", "duplicate", "wontfix"]
         priorities = ["low", "medium", "high", "critical"]
-        
+
         tickets = []
         for idx in range(1, 61):
             branch = branches[(idx - 1) % len(branches)] if branches else None
@@ -1012,20 +1016,20 @@ async def seed_data(
             agent = agents[(idx - 1) % len(agents)] if agents and idx % 3 != 0 else None
             # Assign creator: rotate between available users
             creator = users[(idx - 1) % len(users)] if users else None
-            
+
             status = statuses[idx % 3]
             resolution = None
             # Only assign resolution when status is closed
             if status == "closed":
                 resolution = resolutions[(idx // 3) % 4]
-            
+
             # Add due_date to some tickets (50% of tickets)
             due_date = None
             if idx % 2 == 0:
                 # Some overdue (past), some upcoming (future)
                 days_delta = (idx % 20) - 10  # Range from -10 to +10 days
                 due_date = datetime.now(timezone.utc) + timedelta(days=days_delta)
-            
+
             tickets.append(
                 TicketModel(
                     id=str(uuid.uuid4()),
@@ -1065,7 +1069,7 @@ async def seed_data(
                     "closed": "Ticket closed.",
                 }
                 message_content = status_messages.get(ticket.status, "Ticket created.")
-            
+
             messages.append(
                 MessageModel(
                     id=str(uuid.uuid4()),
@@ -1104,7 +1108,7 @@ async def register(user: UserCreate, request: Request, db: Session = Depends(get
         existing_user = db.query(UserModel).filter(
             (UserModel.username == user.username) | (UserModel.email == user.email)
         ).first()
-        
+
         if existing_user:
             log_audit(
                 user_id=None,
@@ -1118,7 +1122,7 @@ async def register(user: UserCreate, request: Request, db: Session = Depends(get
                 ip_address=request.client.host,
             )
             raise HTTPException(status_code=400, detail="User already exists")
-        
+
         # Create new user
         hashed_password = get_password_hash(user.password)
         db_user = UserModel(
@@ -1131,7 +1135,7 @@ async def register(user: UserCreate, request: Request, db: Session = Depends(get
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
-        
+
         log_audit(
             user_id=db_user.id,
             username=db_user.username,
@@ -1143,7 +1147,7 @@ async def register(user: UserCreate, request: Request, db: Session = Depends(get
             details="New user registered",
             ip_address=request.client.host,
         )
-        
+
         return db_user
     except Exception as e:
         log_audit(
@@ -1171,7 +1175,7 @@ async def login(credentials: LoginRequest, request: Request, db: Session = Depen
                 UserModel.email == credentials.username,
             )
         ).first()
-        
+
         if not user or not verify_password(credentials.password, user.hashed_password):
             log_audit(
                 user_id=None,
@@ -1185,7 +1189,7 @@ async def login(credentials: LoginRequest, request: Request, db: Session = Depen
                 ip_address=request.client.host,
             )
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        
+
         if not user.is_active:
             log_audit(
                 user_id=user.id,
@@ -1199,13 +1203,13 @@ async def login(credentials: LoginRequest, request: Request, db: Session = Depen
                 ip_address=request.client.host,
             )
             raise HTTPException(status_code=403, detail="User inactive")
-        
+
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
             data={"sub": user.username},
             expires_delta=access_token_expires,
         )
-        
+
         log_audit(
             user_id=user.id,
             username=user.username,
@@ -1217,7 +1221,7 @@ async def login(credentials: LoginRequest, request: Request, db: Session = Depen
             details="User logged in",
             ip_address=request.client.host,
         )
-        
+
         return {"access_token": access_token, "token_type": "bearer"}
     except Exception as e:
         log_audit(
@@ -1242,27 +1246,27 @@ async def get_test_token(
 ):
     """
     ⚠️  DEVELOPMENT ONLY - Get a test token without credentials
-    
+
     Returns a valid JWT token for the default admin user.
     This endpoint is intended for frontend development and testing.
     Should be disabled or removed in production.
     """
     # Get admin user from database
     admin_user = db.query(UserModel).filter(UserModel.username == "admin").first()
-    
+
     if not admin_user:
         raise HTTPException(
             status_code=500,
             detail="Admin user not found. Run server to initialize seed data."
         )
-    
+
     # Create token for admin user
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": admin_user.username},
         expires_delta=access_token_expires,
     )
-    
+
     log_audit(
         user_id=admin_user.id,
         username=admin_user.username,
@@ -1274,7 +1278,7 @@ async def get_test_token(
         details="Test token generated (development only)",
         ip_address=request.client.host,
     )
-    
+
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -1311,13 +1315,13 @@ async def list_users(
 ):
     """List all users. Agent can view (read-only), Admin can manage."""
     require_agent_or_admin(current_user)
-    
+
     offset = (page - 1) * limit
     total = db.query(UserModel).count()
     users = db.query(UserModel).order_by(UserModel.created_at.desc()).offset(offset).limit(limit).all()
-    
+
     data = [UserResponse.model_validate(user) for user in users]
-    
+
     # Log the action
     log_audit(
         user_id=current_user.id,
@@ -1329,7 +1333,7 @@ async def list_users(
         db=db,
         details=f"Listed {len(data)} users (page {page})"
     )
-    
+
     return {
         "data": data,
         "pagination": {
@@ -1351,12 +1355,12 @@ async def create_user(
 ):
     """Create a new user. Admin only."""
     require_admin(current_user)
-    
+
     # Check if user exists
     existing_user = db.query(UserModel).filter(
         (UserModel.username == user.username) | (UserModel.email == user.email)
     ).first()
-    
+
     if existing_user:
         log_audit(
             user_id=current_user.id,
@@ -1370,11 +1374,11 @@ async def create_user(
             ip_address=request.client.host,
         )
         raise HTTPException(status_code=400, detail="Username or email already exists")
-    
+
     # Validate role
     if user.role not in ["user", "agent", "admin"]:
         raise HTTPException(status_code=400, detail="Invalid role. Must be: user, agent, or admin")
-    
+
     # Create new user
     hashed_password = get_password_hash(user.password)
     db_user = UserModel(
@@ -1387,7 +1391,7 @@ async def create_user(
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    
+
     log_audit(
         user_id=current_user.id,
         username=current_user.username,
@@ -1399,7 +1403,7 @@ async def create_user(
         details=f"Created user: {db_user.username} with role: {db_user.role}",
         ip_address=request.client.host,
     )
-    
+
     return db_user
 
 
@@ -1413,7 +1417,7 @@ async def get_user(
 ):
     """Get user details. Admin only."""
     require_admin(current_user)
-    
+
     user = db.query(UserModel).filter(UserModel.id == user_id).first()
     if not user:
         log_audit(
@@ -1427,7 +1431,7 @@ async def get_user(
             details="User not found"
         )
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     log_audit(
         user_id=current_user.id,
         username=current_user.username,
@@ -1438,7 +1442,7 @@ async def get_user(
         db=db,
         details=f"Retrieved user: {user.username}"
     )
-    
+
     return user
 
 
@@ -1453,7 +1457,7 @@ async def update_user(
 ):
     """Update user (change role, password, status). Admin only."""
     require_admin(current_user)
-    
+
     user = db.query(UserModel).filter(UserModel.id == user_id).first()
     if not user:
         log_audit(
@@ -1467,10 +1471,10 @@ async def update_user(
             details="User not found"
         )
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     # Track changes for audit log
     changes = []
-    
+
     # Update email (check uniqueness)
     if user_update.email is not None and user_update.email != user.email:
         existing_user = db.query(UserModel).filter(
@@ -1491,27 +1495,27 @@ async def update_user(
             raise HTTPException(status_code=400, detail="Email already in use")
         changes.append(f"email: {user.email} -> {user_update.email}")
         user.email = user_update.email
-    
+
     # Update full name
     if user_update.full_name is not None and user_update.full_name != user.full_name:
         changes.append(f"full_name: {user.full_name} -> {user_update.full_name}")
         user.full_name = user_update.full_name
-    
+
     # Update password (hash it)
     if user_update.password is not None:
         user.hashed_password = get_password_hash(user_update.password)
         changes.append("password: [UPDATED]")
-    
+
     # Update role
     if user_update.role is not None and user_update.role != user.role:
         changes.append(f"role: {user.role} -> {user_update.role}")
         user.role = user_update.role
-    
+
     # Update active status
     if user_update.is_active is not None and user_update.is_active != user.is_active:
         changes.append(f"is_active: {user.is_active} -> {user_update.is_active}")
         user.is_active = user_update.is_active
-    
+
     if not changes:
         log_audit(
             user_id=current_user.id,
@@ -1524,10 +1528,10 @@ async def update_user(
             details="No changes made"
         )
         return user
-    
+
     db.commit()
     db.refresh(user)
-    
+
     log_audit(
         user_id=current_user.id,
         username=current_user.username,
@@ -1538,7 +1542,7 @@ async def update_user(
         db=db,
         details=f"Updated user {user.username}: {', '.join(changes)}"
     )
-    
+
     return user
 
 
@@ -1552,7 +1556,7 @@ async def delete_user(
 ):
     """Delete user. Admin only. Cannot delete self."""
     require_admin(current_user)
-    
+
     # Prevent admin from deleting themselves
     if current_user.id == user_id:
         log_audit(
@@ -1566,7 +1570,7 @@ async def delete_user(
             details="Cannot delete yourself"
         )
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
-    
+
     user = db.query(UserModel).filter(UserModel.id == user_id).first()
     if not user:
         log_audit(
@@ -1580,11 +1584,11 @@ async def delete_user(
             details="User not found"
         )
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     username = user.username
     db.delete(user)
     db.commit()
-    
+
     log_audit(
         user_id=current_user.id,
         username=current_user.username,
@@ -1595,7 +1599,7 @@ async def delete_user(
         db=db,
         details=f"Deleted user: {username}"
     )
-    
+
     return None
 
 
@@ -1615,13 +1619,13 @@ async def list_audit_logs(
     """List audit logs (admin only)."""
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-    
+
     offset = (page - 1) * limit
     total = db.query(AuditLogModel).count()
     logs = db.query(AuditLogModel).offset(offset).limit(limit).all()
 
     data = [AuditLogResponse.model_validate(log) for log in logs]
-    
+
     return {
         "data": data,
         "pagination": {
@@ -1662,7 +1666,7 @@ async def create_branch(
             details=f"Branch: {branch.name}",
             request=request,
         )
-        
+
         return db_branch
     except Exception as e:
         log_audit_optional(
@@ -1744,13 +1748,13 @@ async def update_branch(
         branch = db.query(BranchModel).filter(BranchModel.id == branch_id).first()
         if not branch:
             raise HTTPException(status_code=404, detail="Branch not found")
-        
+
         for key, value in branch_update.dict(exclude_unset=True).items():
             setattr(branch, key, value)
-        
+
         db.commit()
         db.refresh(branch)
-        
+
         log_audit_optional(
             current_user=current_user,
             action="UPDATE",
@@ -1761,7 +1765,7 @@ async def update_branch(
             details=str(branch_update),
             request=request,
         )
-        
+
         return branch
     except Exception as e:
         log_audit_optional(
@@ -1790,10 +1794,10 @@ async def delete_branch(
         branch = db.query(BranchModel).filter(BranchModel.id == branch_id).first()
         if not branch:
             raise HTTPException(status_code=404, detail="Branch not found")
-        
+
         db.delete(branch)
         db.commit()
-        
+
         log_audit_optional(
             current_user=current_user,
             action="DELETE",
@@ -1847,7 +1851,7 @@ async def create_agent(
             details=f"Agent: {agent.name}",
             request=request,
         )
-        
+
         return db_agent
     except Exception as e:
         log_audit_optional(
@@ -1887,7 +1891,7 @@ async def list_agents(
     agents = base_query.offset(offset).limit(limit).all()
 
     data = [AgentResponse.model_validate(agent) for agent in agents]
-    
+
     return {
         "data": data,
         "pagination": {
@@ -1928,13 +1932,13 @@ async def update_agent(
         agent = db.query(AgentModel).filter(AgentModel.id == agent_id).first()
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
-        
+
         for key, value in agent_update.dict(exclude_unset=True).items():
             setattr(agent, key, value)
-        
+
         db.commit()
         db.refresh(agent)
-        
+
         log_audit_optional(
             current_user=current_user,
             action="UPDATE",
@@ -1945,7 +1949,7 @@ async def update_agent(
             details=str(agent_update),
             request=request,
         )
-        
+
         return agent
     except Exception as e:
         log_audit_optional(
@@ -1974,10 +1978,10 @@ async def delete_agent(
         agent = db.query(AgentModel).filter(AgentModel.id == agent_id).first()
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
-        
+
         db.delete(agent)
         db.commit()
-        
+
         log_audit_optional(
             current_user=current_user,
             action="DELETE",
@@ -2031,7 +2035,7 @@ async def create_workgroup(
             details=f"Workgroup: {workgroup.name}",
             request=request,
         )
-        
+
         return db_workgroup
     except Exception as e:
         log_audit_optional(
@@ -2071,7 +2075,7 @@ async def list_workgroups(
     workgroups = base_query.offset(offset).limit(limit).all()
 
     data = [WorkgroupResponse.model_validate(workgroup) for workgroup in workgroups]
-    
+
     return {
         "data": data,
         "pagination": {
@@ -2112,13 +2116,13 @@ async def update_workgroup(
         workgroup = db.query(WorkgroupModel).filter(WorkgroupModel.id == workgroup_id).first()
         if not workgroup:
             raise HTTPException(status_code=404, detail="Workgroup not found")
-        
+
         for key, value in workgroup_update.dict(exclude_unset=True).items():
             setattr(workgroup, key, value)
-        
+
         db.commit()
         db.refresh(workgroup)
-        
+
         log_audit_optional(
             current_user=current_user,
             action="UPDATE",
@@ -2129,7 +2133,7 @@ async def update_workgroup(
             details=str(workgroup_update),
             request=request,
         )
-        
+
         return workgroup
     except Exception as e:
         log_audit_optional(
@@ -2158,10 +2162,10 @@ async def delete_workgroup(
         workgroup = db.query(WorkgroupModel).filter(WorkgroupModel.id == workgroup_id).first()
         if not workgroup:
             raise HTTPException(status_code=404, detail="Workgroup not found")
-        
+
         db.delete(workgroup)
         db.commit()
-        
+
         log_audit_optional(
             current_user=current_user,
             action="DELETE",
@@ -2215,7 +2219,7 @@ async def create_contact(
             details=f"Contact: {contact.name}",
             request=request,
         )
-        
+
         return db_contact
     except Exception as e:
         log_audit_optional(
@@ -2255,7 +2259,7 @@ async def list_contacts(
     contacts = base_query.offset(offset).limit(limit).all()
 
     data = [ContactResponse.model_validate(contact) for contact in contacts]
-    
+
     return {
         "data": data,
         "pagination": {
@@ -2296,13 +2300,13 @@ async def update_contact(
         contact = db.query(ContactModel).filter(ContactModel.id == contact_id).first()
         if not contact:
             raise HTTPException(status_code=404, detail="Contact not found")
-        
+
         for key, value in contact_update.dict(exclude_unset=True).items():
             setattr(contact, key, value)
-        
+
         db.commit()
         db.refresh(contact)
-        
+
         log_audit_optional(
             current_user=current_user,
             action="UPDATE",
@@ -2313,7 +2317,7 @@ async def update_contact(
             details=str(contact_update),
             request=request,
         )
-        
+
         return contact
     except Exception as e:
         log_audit_optional(
@@ -2342,10 +2346,10 @@ async def delete_contact(
         contact = db.query(ContactModel).filter(ContactModel.id == contact_id).first()
         if not contact:
             raise HTTPException(status_code=404, detail="Contact not found")
-        
+
         db.delete(contact)
         db.commit()
-        
+
         log_audit_optional(
             current_user=current_user,
             action="DELETE",
@@ -2389,7 +2393,7 @@ async def create_ticket(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required to create tickets"
         )
-    
+
     try:
         db_ticket = TicketModel(
             id=str(uuid.uuid4()),
@@ -2410,7 +2414,7 @@ async def create_ticket(
             details=f"Ticket: {ticket.subject}",
             request=request,
         )
-        
+
         return db_ticket
     except Exception as e:
         log_audit_optional(
@@ -2438,10 +2442,10 @@ async def list_tickets(
     db: Session = Depends(get_db),
 ):
     """List tickets (filtered by role).
-    
+
     - Users: only see their own tickets
     - Agents/Admins: see all tickets
-    
+
     Defaults: sort_by=updated_at, sort_order=desc when parameters are omitted.
     """
     # Require authentication
@@ -2450,16 +2454,16 @@ async def list_tickets(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required to view tickets"
         )
-    
+
     offset = (page - 1) * limit
     base_query = db.query(TicketModel)
-    
+
     # Filter by role
     if current_user.role == "user":
         # Users only see their own tickets
         base_query = base_query.filter(TicketModel.created_by_id == current_user.id)
     # Admin and agent see all tickets (no additional filter)
-    
+
     total = base_query.count()
 
     # Default ordering for tickets when not provided
@@ -2476,7 +2480,7 @@ async def list_tickets(
     tickets = base_query.offset(offset).limit(limit).all()
 
     data = [TicketResponse.model_validate(ticket) for ticket in tickets]
-    
+
     return {
         "data": data,
         "pagination": {
@@ -2503,18 +2507,18 @@ async def get_ticket(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required"
         )
-    
+
     ticket = db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    
+
     # Check permissions
     if not can_access_ticket(ticket, current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied: You can only view your own tickets"
         )
-    
+
     return ticket
 
 
@@ -2534,26 +2538,26 @@ async def update_ticket(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required"
         )
-    
+
     try:
         ticket = db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
-        
+
         # Check permissions
         if not can_modify_ticket(ticket, current_user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied: You can only modify your own tickets"
             )
-        
+
         for key, value in ticket_update.dict(exclude_unset=True).items():
             setattr(ticket, key, value)
-        
+
         ticket.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(ticket)
-        
+
         log_audit_optional(
             current_user=current_user,
             action="UPDATE",
@@ -2564,7 +2568,7 @@ async def update_ticket(
             details=str(ticket_update),
             request=request,
         )
-        
+
         return ticket
     except Exception as e:
         log_audit_optional(
@@ -2595,22 +2599,22 @@ async def delete_ticket(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required"
         )
-    
+
     try:
         ticket = db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
-        
+
         # Check permissions
         if not can_modify_ticket(ticket, current_user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied: You can only delete your own tickets"
             )
-        
+
         db.delete(ticket)
         db.commit()
-        
+
         log_audit_optional(
             current_user=current_user,
             action="DELETE",
@@ -2696,29 +2700,29 @@ async def create_ticket_message(
             # Allow unauthenticated messages as anonymous users
             sender_name = "Anonymous"
             sender_type = "user"
-        
+
         # Filter out empty files
         attachments = [f for f in attachments if f.filename]
-        
+
         # Validate number of files
         if len(attachments) > MAX_FILES_PER_MESSAGE:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Too many files. Maximum {MAX_FILES_PER_MESSAGE} files allowed."
             )
-        
+
         attachment_metadata = []
-        
+
         # Validate and save files
         for file in attachments:
             # Validate file
             content_bytes = await validate_upload_file(file)
-            
+
             # Sanitize filename
             safe_filename = sanitize_filename(file.filename)
             unique_filename = f"{uuid.uuid4()}_{safe_filename}"
             filepath = os.path.join(UPLOAD_DIR, unique_filename)
-            
+
             # Ensure path is within UPLOAD_DIR (prevent path traversal)
             abs_filepath = os.path.abspath(filepath)
             abs_upload_dir = os.path.abspath(UPLOAD_DIR)
@@ -2727,11 +2731,11 @@ async def create_ticket_message(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid file path"
                 )
-            
+
             # Save file
             with open(filepath, "wb") as f:
                 f.write(content_bytes)
-            
+
             attachment_metadata.append({
                 "name": safe_filename,
                 "type": file.content_type,
@@ -2739,7 +2743,7 @@ async def create_ticket_message(
                 "path": unique_filename,
                 "url": f"/api/attachments/tickets/{unique_filename}"
             })
-        
+
         db_message = MessageModel(
             id=str(uuid.uuid4()),
             ticket_id=ticket_id,
@@ -2762,7 +2766,7 @@ async def create_ticket_message(
             details="Message created",
             request=request,
         )
-        
+
         # Parse attachments JSON for response
         parsed_attachments = None
         if db_message.attachments:
@@ -2770,7 +2774,7 @@ async def create_ticket_message(
                 parsed_attachments = json.loads(db_message.attachments)
             except (json.JSONDecodeError, TypeError):
                 parsed_attachments = None
-        
+
         # Return response with parsed attachments
         return MessageResponse(
             id=db_message.id,
@@ -2811,24 +2815,24 @@ async def download_attachment(
     # Security: prevent path traversal
     if ".." in path or "/" in path or "\\" in path:
         raise HTTPException(status_code=400, detail="Invalid file path")
-    
+
     # Construct full path
     filepath = os.path.join(UPLOAD_DIR, path)
-    
+
     # Ensure path is within UPLOAD_DIR (prevent path traversal)
     abs_filepath = os.path.abspath(filepath)
     abs_upload_dir = os.path.abspath(UPLOAD_DIR)
     if not abs_filepath.startswith(abs_upload_dir):
         raise HTTPException(status_code=400, detail="Invalid file path")
-    
+
     # Check if file exists
     if not os.path.isfile(filepath):
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     # Extract original filename (after UUID prefix)
     # Format is: {uuid}_{original_name}
     original_name = "_".join(path.split("_")[1:]) if "_" in path else path
-    
+
     # Return file with proper headers
     return FileResponse(
         path=filepath,
@@ -2867,7 +2871,7 @@ def startup_event():
     """Create seed data on startup."""
     ensure_contact_columns()
     db = SessionLocal()
-    
+
     # Check if admin user already exists
     admin_exists = db.query(UserModel).filter(UserModel.username == "admin").first()
     if not admin_exists:
@@ -2880,7 +2884,7 @@ def startup_event():
             is_active=True,
         )
         db.add(admin)
-    
+
     # Check if agent user already exists
     agent_exists = db.query(UserModel).filter(UserModel.username == "agent").first()
     if not agent_exists:
@@ -2893,7 +2897,7 @@ def startup_event():
             is_active=True,
         )
         db.add(agent)
-    
+
     # Check if demo user already exists
     user_exists = db.query(UserModel).filter(UserModel.username == "user").first()
     if not user_exists:
@@ -2906,7 +2910,7 @@ def startup_event():
             is_active=True,
         )
         db.add(user)
-    
+
     db.commit()
     db.close()
 
