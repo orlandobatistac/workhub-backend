@@ -62,3 +62,6 @@ Thumbs.db
 workhub.db
 audit.log
 uploads/
+
+# Temporary files
+tmpclaude-*
