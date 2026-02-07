@@ -2913,11 +2913,14 @@ async def download_attachment(
     # Format is: {uuid}_{original_name}
     original_name = "_".join(path.split("_")[1:]) if "_" in path else path
 
-    # Return file with proper headers
+    # Return file with proper headers for forced download
     return FileResponse(
         path=filepath,
         filename=original_name,
-        media_type=None  # Let FileResponse infer from file extension
+        media_type="application/octet-stream",  # Force download for all file types
+        headers={
+            "Content-Disposition": f'attachment; filename="{original_name}"'
+        }
     )
 
 
