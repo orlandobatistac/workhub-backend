@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, ForeignKey, or_
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, Mapped, mapped_column
 from sqlalchemy.pool import StaticPool
 from pydantic import BaseModel, Field
 from passlib.context import CryptContext
@@ -101,9 +101,14 @@ def sanitize_filename(filename: str) -> str:
     name = name[:100]
     return f"{name}{ext}"
 
-async def validate_upload_file(file: UploadFile) -> None:
+async def validate_upload_file(file: UploadFile) -> bytes:
     """Validate uploaded file for security."""
     # Get file extension
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Filename is required"
+        )
     _, ext = os.path.splitext(file.filename)
     ext = ext.lower()
 
@@ -165,110 +170,138 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 # ============================================================================
+# TYPE CONVERSION HELPERS (for SQLAlchemy Column types to Python primitives)
+# ============================================================================
+
+def to_int(value: Any) -> Optional[int]:
+    """Safely convert a value (potentially Column[int]) to int."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def to_str(value: Any) -> str:
+    """Safely convert a value (potentially Column[str]) to str."""
+    if value is None:
+        return ""
+    return str(value)
+
+
+def to_optional_str(value: Any) -> Optional[str]:
+    """Safely convert a value (potentially Column[str]) to Optional[str]."""
+    if value is None:
+        return None
+    return str(value)
+
+
+# ============================================================================
 # DATABASE MODELS
 # ============================================================================
 
 class UserModel(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
-    email = Column(String, unique=True, index=True)
-    full_name = Column(String)
-    hashed_password = Column(String)
-    role = Column(String, default="user")  # admin, agent, user
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    username: Mapped[str] = mapped_column(String, unique=True, index=True)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String)
+    hashed_password: Mapped[str] = mapped_column(String)
+    role: Mapped[str] = mapped_column(String, default="user")  # admin, agent, user
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class AuditLogModel(Base):
     __tablename__ = "audit_logs"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, nullable=True)
-    username = Column(String)
-    action = Column(String)  # CREATE, READ, UPDATE, DELETE
-    resource = Column(String)  # Branch, Agent, etc.
-    resource_id = Column(String, nullable=True)
-    details = Column(Text, nullable=True)
-    status = Column(String)  # SUCCESS, FAILED
-    ip_address = Column(String, nullable=True)
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    username: Mapped[str] = mapped_column(String)
+    action: Mapped[str] = mapped_column(String)  # CREATE, READ, UPDATE, DELETE
+    resource: Mapped[str] = mapped_column(String)  # Branch, Agent, etc.
+    resource_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String)  # SUCCESS, FAILED
+    ip_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class BranchModel(Base):
     __tablename__ = "branches"
 
-    id = Column(String, primary_key=True, index=True)
-    branch_code = Column(String, unique=True, index=True)
-    name = Column(String, index=True)
-    address = Column(String)
-    status = Column(String, default="active")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    branch_code: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
+    address: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class AgentModel(Base):
     __tablename__ = "agents"
 
-    id = Column(String, primary_key=True, index=True)
-    agent_id = Column(String, unique=True, index=True)
-    name = Column(String, index=True)
-    role = Column(String, default="Agent")
-    workgroup_id = Column(String, nullable=True)
-    external_id = Column(String, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    agent_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
+    role: Mapped[str] = mapped_column(String, default="Agent")
+    workgroup_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class WorkgroupModel(Base):
     __tablename__ = "workgroups"
 
-    id = Column(String, primary_key=True, index=True)
-    name = Column(String, index=True)
-    description = Column(String)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
+    description: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class ContactModel(Base):
     __tablename__ = "contacts"
 
-    id = Column(String, primary_key=True, index=True)
-    contact_id = Column(String, unique=True, index=True)
-    name = Column(String, index=True)
-    email = Column(String, nullable=True, index=True)
-    phone = Column(String, nullable=True)
-    primary_branch_id = Column(String)
-    external_id = Column(String, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    contact_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
+    email: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    phone: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    primary_branch_id: Mapped[str] = mapped_column(String)
+    external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class TicketModel(Base):
     __tablename__ = "tickets"
 
-    id = Column(String, primary_key=True, index=True)
-    subject = Column(String, index=True)
-    description = Column(String)
-    priority = Column(String, default="medium")
-    status = Column(String, default="open")
-    resolution = Column(String, nullable=True)  # resolved, cancelled, duplicate, wontfix
-    branch_id = Column(String, nullable=True)
-    assignee_agent_id = Column(String, nullable=True)
-    contact_id = Column(String, nullable=True)
-    due_date = Column(DateTime, nullable=True)
-    created_by_id = Column(Integer, nullable=True)  # User ID who created the ticket
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    subject: Mapped[str] = mapped_column(String, index=True)
+    description: Mapped[str] = mapped_column(String)
+    priority: Mapped[str] = mapped_column(String, default="medium")
+    status: Mapped[str] = mapped_column(String, default="open")
+    resolution: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # resolved, cancelled, duplicate, wontfix
+    branch_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    assignee_agent_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    contact_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    due_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # User ID who created the ticket
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class MessageModel(Base):
     __tablename__ = "messages"
 
-    id = Column(String, primary_key=True, index=True)
-    ticket_id = Column(String, index=True)
-    sender_name = Column(String)
-    sender_type = Column(String)
-    content = Column(String)
-    attachments = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    ticket_id: Mapped[str] = mapped_column(String, index=True)
+    sender_name: Mapped[str] = mapped_column(String)
+    sender_type: Mapped[str] = mapped_column(String)
+    content: Mapped[str] = mapped_column(String)
+    attachments: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 # Create tables
@@ -659,7 +692,7 @@ async def get_current_user(request: Request, db: Session = Depends(get_db)) -> U
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
+        username: Optional[str] = payload.get("sub")
         if username is None:
             raise credentials_exception
     except JWTError:
@@ -669,7 +702,9 @@ async def get_current_user(request: Request, db: Session = Depends(get_db)) -> U
     if user is None:
         raise credentials_exception
 
-    if not user.is_active:
+    # Convert Column[bool] to bool explicitly
+    is_active = bool(user.is_active) if hasattr(user.is_active, '__bool__') else user.is_active
+    if not is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User inactive")
 
     return user
@@ -689,7 +724,7 @@ async def get_optional_user(request: Request, db: Session = Depends(get_db)) -> 
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
+        username: Optional[str] = payload.get("sub")
         if username is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     except JWTError:
@@ -699,7 +734,9 @@ async def get_optional_user(request: Request, db: Session = Depends(get_db)) -> 
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
-    if not user.is_active:
+    # Convert Column[bool] to bool explicitly
+    is_active = bool(user.is_active) if hasattr(user.is_active, '__bool__') else user.is_active
+    if not is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User inactive")
 
     return user
@@ -709,22 +746,38 @@ async def get_optional_user(request: Request, db: Session = Depends(get_db)) -> 
 # PERMISSION HELPERS
 # ============================================================================
 
-def require_admin(current_user: Optional[UserModel]):
-    """Verify that the current user is an admin."""
-    if not current_user or current_user.role != "admin":
+def require_admin(current_user: Optional[UserModel]) -> UserModel:
+    """Verify that the current user is an admin. Returns the user if valid, raises HTTPException otherwise."""
+    if not current_user:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"
         )
+    # Convert Column[str] to str for comparison
+    role = to_str(current_user.role)
+    if role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return current_user
 
 
-def require_agent_or_admin(current_user: Optional[UserModel]):
-    """Verify that the current user is an agent or admin."""
-    if not current_user or current_user.role not in ["admin", "agent"]:
+def require_agent_or_admin(current_user: Optional[UserModel]) -> UserModel:
+    """Verify that the current user is an agent or admin. Returns the user if valid, raises HTTPException otherwise."""
+    if not current_user:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Agent or admin access required"
         )
+    # Convert Column[str] to str for comparison
+    role = to_str(current_user.role)
+    if role not in ["admin", "agent"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent or admin access required"
+        )
+    return current_user
 
 
 def can_access_ticket(ticket: TicketModel, current_user: Optional[UserModel]) -> bool:
@@ -737,13 +790,18 @@ def can_access_ticket(ticket: TicketModel, current_user: Optional[UserModel]) ->
     if not current_user:
         return False
 
+    # Convert Column[str] to str for comparison
+    role = to_str(current_user.role)
+
     # Admin and agent can see all tickets
-    if current_user.role in ["admin", "agent"]:
+    if role in ["admin", "agent"]:
         return True
 
     # User can only see their own tickets
-    if current_user.role == "user":
-        return ticket.created_by_id == current_user.id
+    if role == "user":
+        # Compare values, not Column objects
+        user_id_value = getattr(current_user, 'id', None)
+        return ticket.created_by_id == user_id_value
 
     return False
 
@@ -759,17 +817,22 @@ def can_modify_ticket(ticket: TicketModel, current_user: Optional[UserModel]) ->
     if not current_user:
         return False
 
+    # Convert Column[str] to str for comparison
+    role = to_str(current_user.role)
+
     # Admin can modify all tickets
-    if current_user.role == "admin":
+    if role == "admin":
         return True
 
     # Agent can modify all tickets
-    if current_user.role == "agent":
+    if role == "agent":
         return True
 
     # User can only modify their own tickets
-    if current_user.role == "user":
-        return ticket.created_by_id == current_user.id
+    if role == "user":
+        # Compare values, not Column objects
+        user_id_value = getattr(current_user, 'id', None)
+        return ticket.created_by_id == user_id_value
 
     return False
 
@@ -786,15 +849,22 @@ def log_audit(
     ip_address: Optional[str] = None,
 ):
     """Log audit event to database and file."""
+    # Convert any Column types to primitive types
+    clean_user_id = to_int(user_id) if user_id is not None else None
+    clean_username = to_str(username)
+    clean_resource_id = to_optional_str(resource_id)
+    clean_details = to_optional_str(details)
+    clean_ip_address = to_optional_str(ip_address)
+
     audit_log = AuditLogModel(
-        user_id=user_id,
-        username=username,
+        user_id=clean_user_id,
+        username=clean_username,
         action=action,
         resource=resource,
-        resource_id=resource_id,
-        details=details,
+        resource_id=clean_resource_id,
+        details=clean_details,
         status=status,
-        ip_address=ip_address,
+        ip_address=clean_ip_address,
     )
     db.add(audit_log)
     db.commit()
@@ -803,11 +873,11 @@ def log_audit(
     with open("audit.log", "a") as f:
         f.write(
             f"{datetime.now(timezone.utc).isoformat()} | "
-            f"User: {username} | "
+            f"User: {clean_username} | "
             f"Action: {action} | "
             f"Resource: {resource} | "
             f"Status: {status} | "
-            f"IP: {ip_address}\n"
+            f"IP: {clean_ip_address}\n"
         )
 
 
@@ -818,12 +888,12 @@ def log_audit_optional(
     resource_id: Optional[str],
     status: str,
     db: Session,
-    request: Request,
+    request: Optional[Request],
     details: Optional[str] = None,
 ):
     if current_user:
-        user_id = current_user.id
-        username = current_user.username
+        user_id = to_int(current_user.id)
+        username = to_str(current_user.username)
     else:
         user_id = None
         username = "anonymous"
@@ -837,7 +907,7 @@ def log_audit_optional(
         status=status,
         db=db,
         details=details,
-        ip_address=request.client.host if request.client else None,
+        ip_address=request.client.host if (request and request.client) else None,
     )
 
 
@@ -1054,21 +1124,25 @@ async def seed_data(
         tickets = db.query(TicketModel).all()
         for ticket in tickets:
             # Create contextual messages based on ticket status and resolution
-            if ticket.status == "closed" and ticket.resolution:
+            # Get actual string values from Column attributes
+            ticket_status = str(ticket.status) if ticket.status else "open"
+            ticket_resolution = str(ticket.resolution) if ticket.resolution else None
+
+            if ticket_status == "closed" and ticket_resolution:
                 resolution_messages = {
                     "resolved": "Issue resolved successfully.",
                     "cancelled": "Ticket cancelled by request.",
                     "duplicate": "Ticket closed as duplicate.",
                     "wontfix": "Ticket closed as won't fix.",
                 }
-                message_content = resolution_messages.get(ticket.resolution, "Ticket closed.")
+                message_content = resolution_messages.get(ticket_resolution, "Ticket closed.")
             else:
                 status_messages = {
                     "open": "Ticket created and awaiting assignment.",
                     "in_progress": "Ticket assigned to agent. Work in progress.",
                     "closed": "Ticket closed.",
                 }
-                message_content = status_messages.get(ticket.status, "Ticket created.")
+                message_content = status_messages.get(ticket_status, "Ticket created.")
 
             messages.append(
                 MessageModel(
@@ -1119,7 +1193,7 @@ async def register(user: UserCreate, request: Request, db: Session = Depends(get
                 status="FAILED",
                 db=db,
                 details="User already exists",
-                ip_address=request.client.host,
+                ip_address=request.client.host if request.client else None,
             )
             raise HTTPException(status_code=400, detail="User already exists")
 
@@ -1137,15 +1211,15 @@ async def register(user: UserCreate, request: Request, db: Session = Depends(get
         db.refresh(db_user)
 
         log_audit(
-            user_id=db_user.id,
-            username=db_user.username,
+            user_id=to_int(db_user.id),
+            username=to_str(db_user.username),
             action="CREATE",
             resource="User",
-            resource_id=db_user.id,
+            resource_id=str(db_user.id),
             status="SUCCESS",
             db=db,
             details="New user registered",
-            ip_address=request.client.host,
+            ip_address=request.client.host if request.client else None,
         )
 
         return db_user
@@ -1159,7 +1233,7 @@ async def register(user: UserCreate, request: Request, db: Session = Depends(get
             status="FAILED",
             db=db,
             details=str(e),
-            ip_address=request.client.host,
+            ip_address=request.client.host if request.client else None,
         )
         raise
 
@@ -1176,7 +1250,7 @@ async def login(credentials: LoginRequest, request: Request, db: Session = Depen
             )
         ).first()
 
-        if not user or not verify_password(credentials.password, user.hashed_password):
+        if not user or not verify_password(credentials.password, to_str(user.hashed_password)):
             log_audit(
                 user_id=None,
                 username=credentials.username,
@@ -1186,21 +1260,23 @@ async def login(credentials: LoginRequest, request: Request, db: Session = Depen
                 status="FAILED",
                 db=db,
                 details="Invalid credentials",
-                ip_address=request.client.host,
+                ip_address=request.client.host if request.client else None,
             )
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
-        if not user.is_active:
+        # Convert Column[bool] to bool explicitly
+        is_active = bool(user.is_active) if hasattr(user.is_active, '__bool__') else user.is_active
+        if not is_active:
             log_audit(
-                user_id=user.id,
-                username=user.username,
+                user_id=to_int(user.id),
+                username=to_str(user.username),
                 action="LOGIN",
                 resource="Authentication",
-                resource_id=user.id,
+                resource_id=str(user.id),
                 status="FAILED",
                 db=db,
                 details="User inactive",
-                ip_address=request.client.host,
+                ip_address=request.client.host if request.client else None,
             )
             raise HTTPException(status_code=403, detail="User inactive")
 
@@ -1211,15 +1287,15 @@ async def login(credentials: LoginRequest, request: Request, db: Session = Depen
         )
 
         log_audit(
-            user_id=user.id,
-            username=user.username,
+            user_id=to_int(user.id),
+            username=to_str(user.username),
             action="LOGIN",
             resource="Authentication",
-            resource_id=user.id,
+            resource_id=str(user.id),
             status="SUCCESS",
             db=db,
             details="User logged in",
-            ip_address=request.client.host,
+            ip_address=request.client.host if request.client else None,
         )
 
         return {"access_token": access_token, "token_type": "bearer"}
@@ -1233,7 +1309,7 @@ async def login(credentials: LoginRequest, request: Request, db: Session = Depen
             status="FAILED",
             db=db,
             details=str(e),
-            ip_address=request.client.host,
+            ip_address=request.client.host if request.client else None,
         )
         raise
 
@@ -1268,15 +1344,15 @@ async def get_test_token(
     )
 
     log_audit(
-        user_id=admin_user.id,
-        username=admin_user.username,
+        user_id=to_int(admin_user.id),
+        username=to_str(admin_user.username),
         action="TEST_TOKEN",
         resource="Authentication",
-        resource_id=admin_user.id,
+        resource_id=str(admin_user.id),
         status="SUCCESS",
         db=db,
         details="Test token generated (development only)",
-        ip_address=request.client.host,
+        ip_address=request.client.host if request.client else None,
     )
 
     return {
@@ -1314,7 +1390,7 @@ async def list_users(
     db: Session = Depends(get_db),
 ):
     """List all users. Agent can view (read-only), Admin can manage."""
-    require_agent_or_admin(current_user)
+    current_user = require_agent_or_admin(current_user)
 
     offset = (page - 1) * limit
     total = db.query(UserModel).count()
@@ -1354,7 +1430,7 @@ async def create_user(
     db: Session = Depends(get_db),
 ):
     """Create a new user. Admin only."""
-    require_admin(current_user)
+    current_user = require_admin(current_user)
 
     # Check if user exists
     existing_user = db.query(UserModel).filter(
@@ -1371,7 +1447,7 @@ async def create_user(
             status="failed",
             db=db,
             details=f"User already exists: {user.username}",
-            ip_address=request.client.host,
+            ip_address=request.client.host if request.client else None,
         )
         raise HTTPException(status_code=400, detail="Username or email already exists")
 
@@ -1401,7 +1477,7 @@ async def create_user(
         status="success",
         db=db,
         details=f"Created user: {db_user.username} with role: {db_user.role}",
-        ip_address=request.client.host,
+        ip_address=request.client.host if request.client else None,
     )
 
     return db_user
@@ -1416,7 +1492,7 @@ async def get_user(
     db: Session = Depends(get_db),
 ):
     """Get user details. Admin only."""
-    require_admin(current_user)
+    current_user = require_admin(current_user)
 
     user = db.query(UserModel).filter(UserModel.id == user_id).first()
     if not user:
@@ -1456,7 +1532,7 @@ async def update_user(
     db: Session = Depends(get_db),
 ):
     """Update user (change role, password, status). Admin only."""
-    require_admin(current_user)
+    current_user = require_admin(current_user)
 
     user = db.query(UserModel).filter(UserModel.id == user_id).first()
     if not user:
@@ -1494,27 +1570,27 @@ async def update_user(
             )
             raise HTTPException(status_code=400, detail="Email already in use")
         changes.append(f"email: {user.email} -> {user_update.email}")
-        user.email = user_update.email
+        setattr(user, 'email', user_update.email)
 
     # Update full name
     if user_update.full_name is not None and user_update.full_name != user.full_name:
         changes.append(f"full_name: {user.full_name} -> {user_update.full_name}")
-        user.full_name = user_update.full_name
+        setattr(user, 'full_name', user_update.full_name)
 
     # Update password (hash it)
     if user_update.password is not None:
-        user.hashed_password = get_password_hash(user_update.password)
+        setattr(user, 'hashed_password', get_password_hash(user_update.password))
         changes.append("password: [UPDATED]")
 
     # Update role
     if user_update.role is not None and user_update.role != user.role:
         changes.append(f"role: {user.role} -> {user_update.role}")
-        user.role = user_update.role
+        setattr(user, 'role', user_update.role)
 
     # Update active status
     if user_update.is_active is not None and user_update.is_active != user.is_active:
         changes.append(f"is_active: {user.is_active} -> {user_update.is_active}")
-        user.is_active = user_update.is_active
+        setattr(user, 'is_active', user_update.is_active)
 
     if not changes:
         log_audit(
@@ -1555,7 +1631,7 @@ async def delete_user(
     db: Session = Depends(get_db),
 ):
     """Delete user. Admin only. Cannot delete self."""
-    require_admin(current_user)
+    current_user = require_admin(current_user)
 
     # Prevent admin from deleting themselves
     if current_user.id == user_id:
@@ -1660,7 +1736,7 @@ async def create_branch(
             current_user=current_user,
             action="CREATE",
             resource="Branch",
-            resource_id=db_branch.id,
+            resource_id=str(db_branch.id),
             status="SUCCESS",
             db=db,
             details=f"Branch: {branch.name}",
@@ -1845,7 +1921,7 @@ async def create_agent(
             current_user=current_user,
             action="CREATE",
             resource="Agent",
-            resource_id=db_agent.id,
+            resource_id=str(db_agent.id),
             status="SUCCESS",
             db=db,
             details=f"Agent: {agent.name}",
@@ -2029,7 +2105,7 @@ async def create_workgroup(
             current_user=current_user,
             action="CREATE",
             resource="Workgroup",
-            resource_id=db_workgroup.id,
+            resource_id=str(db_workgroup.id),
             status="SUCCESS",
             db=db,
             details=f"Workgroup: {workgroup.name}",
@@ -2213,7 +2289,7 @@ async def create_contact(
             current_user=current_user,
             action="CREATE",
             resource="Contact",
-            resource_id=db_contact.id,
+            resource_id=str(db_contact.id),
             status="SUCCESS",
             db=db,
             details=f"Contact: {contact.name}",
@@ -2408,7 +2484,7 @@ async def create_ticket(
             current_user=current_user,
             action="CREATE",
             resource="Ticket",
-            resource_id=db_ticket.id,
+            resource_id=str(db_ticket.id),
             status="SUCCESS",
             db=db,
             details=f"Ticket: {ticket.subject}",
@@ -2554,7 +2630,7 @@ async def update_ticket(
         for key, value in ticket_update.dict(exclude_unset=True).items():
             setattr(ticket, key, value)
 
-        ticket.updated_at = datetime.now(timezone.utc)
+        setattr(ticket, 'updated_at', datetime.now(timezone.utc))
         db.commit()
         db.refresh(ticket)
 
@@ -2684,9 +2760,9 @@ async def list_ticket_messages(
 @limiter.limit(RATE_LIMIT)
 async def create_ticket_message(
     ticket_id: str,
+    request: Request,
     content: str = Form(...),
     attachments: List[UploadFile] = File(default=[]),
-    request: Request = None,
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
@@ -2715,10 +2791,14 @@ async def create_ticket_message(
 
         # Validate and save files
         for file in attachments:
+            # Ensure filename exists (double-check)
+            if not file.filename:
+                continue
+
             # Validate file
             content_bytes = await validate_upload_file(file)
 
-            # Sanitize filename
+            # Sanitize filename (now guaranteed to be str)
             safe_filename = sanitize_filename(file.filename)
             unique_filename = f"{uuid.uuid4()}_{safe_filename}"
             filepath = os.path.join(UPLOAD_DIR, unique_filename)
@@ -2760,7 +2840,7 @@ async def create_ticket_message(
             current_user=current_user,
             action="CREATE",
             resource="Message",
-            resource_id=db_message.id,
+            resource_id=str(db_message.id),
             status="SUCCESS",
             db=db,
             details="Message created",
@@ -2769,21 +2849,24 @@ async def create_ticket_message(
 
         # Parse attachments JSON for response
         parsed_attachments = None
-        if db_message.attachments:
+        # Convert Column[str] to str explicitly
+        attachments_str = str(db_message.attachments) if db_message.attachments else None
+        if attachments_str:
             try:
-                parsed_attachments = json.loads(db_message.attachments)
+                parsed_attachments = json.loads(attachments_str)
             except (json.JSONDecodeError, TypeError):
                 parsed_attachments = None
 
         # Return response with parsed attachments
+        # Convert Column types to primitive types explicitly
         return MessageResponse(
-            id=db_message.id,
-            ticket_id=db_message.ticket_id,
-            sender_name=db_message.sender_name,
-            sender_type=db_message.sender_type,
-            content=db_message.content,
+            id=str(db_message.id),
+            ticket_id=str(db_message.ticket_id),
+            sender_name=str(db_message.sender_name),
+            sender_type=str(db_message.sender_type),
+            content=str(db_message.content),
             attachments=parsed_attachments,
-            created_at=db_message.created_at
+            created_at=db_message.created_at  # datetime is fine
         )
     except Exception as e:
         log_audit_optional(
