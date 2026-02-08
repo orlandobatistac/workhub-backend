@@ -65,3 +65,12 @@ uploads/
 
 # Temporary files
 tmpclaude-*
+
+# Test / coverage / caches
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.pytype/
+.cache/
