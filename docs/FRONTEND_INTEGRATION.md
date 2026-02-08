@@ -115,6 +115,15 @@ const TicketPriority = {
 }
 ```
 
+### Enums oficiales ✅
+
+Estos valores son los *oficiales y autorizados* para el contrato entre el backend y el nuevo frontend (documentado aquí). Usarlos exactamente como se muestran en todas las llamadas API, validaciones y vistas.
+
+- Status (campo `status` en `Ticket`): `new`, `open`, `closed`
+- Priorities (campo `priority` en `Ticket`): `low`, `medium`, `high`, `urgent`
+
+> Nota: el backend **valida** estos valores en `app/schemas.py` y los scripts de seed ya generan datos con estos enums.
+
 ### Badge colors
 
 ```css
@@ -227,14 +236,16 @@ POST /api/tickets
 Content-Type: multipart/form-data
 Authorization: Bearer {token}
 
-{
-  "subject": "Sistema lento",
-  "description": "Desde ayer el sistema está muy lento",
-  "priority": "medium",
-  "workgroup_id": "wg-soporte-tecnico",
-  "attachments": [File, File, ...]
-}
+Fields:
+- subject (string)
+- description (string)
+- priority (string)
+- workgroup_id (optional)
+- assignee_id (optional)
+- attachments: one or more files (multipart field name `attachments`)
 ```
+
+**Behavior:** This endpoint accepts either JSON (existing behavior) or multipart/form-data. When the request includes a `description`, the backend will always create a `first_message` whose `content` is the ticket `description`. If files are uploaded (multipart), those files are stored and attached to the `first_message`. Attachment validation enforces a maximum of **5 files** and **10MB** per file. When a `first_message` is created, the response includes both the created `ticket` and the `first_message` with attachment metadata and downloadable `url`.
 
 **Response:**
 ```json
@@ -262,8 +273,10 @@ Authorization: Bearer {token}
     "content": "Desde ayer el sistema está muy lento",
     "attachments": [
       {
+        "path": "uploads/messages/msg-456/abcd123_screenshot.png",
+        "url": "/api/attachments/messages/uploads%2Fmessages%2Fmsg-456%2Fabcd123_screenshot.png",
         "name": "screenshot.png",
-        "url": "/uploads/screenshot.png",
+        "type": "image/png",
         "size": 1234567
       }
     ],

@@ -5,11 +5,19 @@ FastAPI backend for ticket management system.
 ## Setup
 
 ```bash
+# Create and activate a virtual environment (cross-platform)
 python -m venv .venv
+# macOS / Linux
 source .venv/bin/activate
+# Windows (PowerShell)
+.\.venv\Scripts\Activate.ps1
+# Install dependencies
 pip install -r requirements.txt
-cp .env.example .env
-uvicorn main:app --reload
+# Copy example env
+cp .env.example .env  # or copy .env.example .env on Windows
+
+# Run the server (application entry is `app.main:app`)
+uvicorn app.main:app --reload
 ```
 
 Server: `http://localhost:8000`
@@ -117,10 +125,40 @@ SQLite by default. Change via `DATABASE_URL` in `.env`.
 
 Tables: users, branches, agents, workgroups, contacts, tickets, messages, audit_logs
 
-## Docs
+## Docs / API Contract
 
 - Swagger: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
+
+**API Contract (OpenAPI)**
+
+- A generated, augmented OpenAPI (with examples) is stored at `docs/openapi.json` and serves as the machine-readable API contract.
+- The generation script is at `scripts/generate_openapi.py` — run it to regenerate the contract.
+- CI validates `docs/openapi.json` on PRs via `.github/workflows/verify_openapi.yml` to prevent accidental API drift. ✅
+
+**Notable API behaviour**
+
+- POST `/api/tickets` will **always** create a first message when a `description` is supplied (works for JSON and multipart requests). The response may include a `first_message` object when created.
+- Attachments: maximum **10 MB** per file and **maximum 5 attachments** per message. If these limits are exceeded, the API returns documented errors such as `attachment_too_large` and `attachment_too_many`.
+
+## Security Scans 🔒
+
+This repository includes basic automated security checks:
+
+- **Dependabot** (`.github/dependabot.yml`) — checks for dependency updates weekly and raises PRs for upgrades.
+- **Bandit** — a Python security scanner. A helper script is available at `scripts/bandit_check.py` that runs Bandit and fails when issues of configured severities are found (env var `BANDIT_FAIL_SEVERITIES`, default `HIGH`).
+- **CodeQL** — GitHub CodeQL analysis is executed via `CodeQL` job in `.github/workflows/ci.yml`.
+
+Run Bandit locally:
+
+```bash
+pip install bandit
+python scripts/bandit_check.py
+```
+
+You can configure the severities that cause the CI job to fail with `BANDIT_FAIL_SEVERITIES` (e.g. `MEDIUM, HIGH`).
+
+---
 
 ## License
 
