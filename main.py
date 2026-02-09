@@ -43,9 +43,9 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./workhub.db")
 ALLOWED_ORIGINS_STR = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000,http://localhost:5000")
 ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_STR.split(",")]
 
-# By default, accepts all origins ending in .github.dev and localhost with any port
-# Useful for development in GitHub Codespaces and local development
-CORS_PATTERN = os.getenv("CORS_PATTERN", r"https?://(localhost(:\d+)?|.*\.github\.dev)")
+# By default, accepts all origins ending in .github.dev, .github.io and localhost with any port
+# Useful for development in GitHub Codespaces, GitHub Pages, and local development
+CORS_PATTERN = os.getenv("CORS_PATTERN", r"https?://(localhost(:\d+)?|.*\.github\.(dev|io)|.*\.orlandobatista\.dev)")
 
 # File Upload Setup
 UPLOAD_DIR = "uploads/tickets"
