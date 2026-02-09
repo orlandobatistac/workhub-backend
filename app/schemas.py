@@ -140,7 +140,7 @@ class MessageResponse(BaseModel):
     id: str
     ticket_id: str
     sender_id: int
-    sender_type: UserType
+    sender_type: str
     content: str
     attachments: Optional[list[Attachment]]
     created_at: datetime

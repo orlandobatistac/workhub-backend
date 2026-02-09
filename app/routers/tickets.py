@@ -266,7 +266,7 @@ async def create_ticket(request: Request = None, db: Session = Depends(get_db), 
 
 
 @router.get("/")
-async def list_tickets(request: Request, page: int = Query(1, ge=1), limit: int = Query(10, ge=1, le=100), status_filter: Optional[str] = Query(None, alias="status"), assignee_id: Optional[int] = Query(None), contact_id: Optional[int] = Query(None), workgroup_id: Optional[str] = Query(None), current_user: Optional[models.UserModel] = Depends(get_optional_user), db: Session = Depends(get_db)):
+async def list_tickets(request: Request, page: int = Query(1, ge=1), limit: int = Query(10, ge=1, le=100), status_filter: Optional[str] = Query(None, alias="status"), assignee_id: Optional[str] = Query(None), contact_id: Optional[int] = Query(None), workgroup_id: Optional[str] = Query(None), current_user: Optional[models.UserModel] = Depends(get_optional_user), db: Session = Depends(get_db)):
     """List tickets with optional filters. Access rules applied based on user type.
 
     Supports optional `workgroup_id` query parameter:
@@ -307,7 +307,10 @@ async def list_tickets(request: Request, page: int = Query(1, ge=1), limit: int 
     if status_filter:
         q = q.filter(models.TicketModel.status == status_filter)
     if assignee_id is not None:
-        q = q.filter(models.TicketModel.assignee_id == assignee_id)
+        if assignee_id == "null":
+            q = q.filter(models.TicketModel.assignee_id.is_(None))
+        else:
+            q = q.filter(models.TicketModel.assignee_id == int(assignee_id))
     if contact_id is not None:
         q = q.filter(models.TicketModel.contact_id == contact_id)
 

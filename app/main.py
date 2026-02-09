@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 
-DEFAULT_RATE_LIMIT = os.getenv("RATE_LIMIT", "10/minute")
+DEFAULT_RATE_LIMIT = os.getenv("RATE_LIMIT", "100/second")
 limiter = Limiter(key_func=get_remote_address, default_limits=[DEFAULT_RATE_LIMIT])
 
 

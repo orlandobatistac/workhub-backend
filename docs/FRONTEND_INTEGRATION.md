@@ -561,7 +561,7 @@ GET /api/tickets/{id}/messages
 **Dashboard:** `/admin/dashboard`
 
 **Vistas principales:**
-- `/admin/team` → Gestionar admins y agents
+- `/admin/users` → Gestionar admins y agents
 - `/admin/customers` → Ver/gestionar contacts
 - `/admin/branches` → Gestionar sucursales
 - `/admin/workgroups` → Gestionar equipos

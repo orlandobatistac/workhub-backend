@@ -145,6 +145,31 @@ async def list_customers(request: Request, page: int = Query(1, ge=1), limit: in
     }
 
 
+@router.get("/")
+async def list_all_users(request: Request, page: int = Query(1, ge=1), limit: int = Query(10, ge=1, le=100), current_user: models.UserModel = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """List all users (admin only)."""
+    client_ip = request.client.host if request.client else None
+
+    offset = (page - 1) * limit
+    total = db.query(models.UserModel).count()
+
+    users = db.query(models.UserModel).order_by(models.UserModel.created_at.desc()).offset(offset).limit(limit).all()
+
+    data = [schemas.UserResponse.model_validate(u) for u in users]
+
+    _log_audit(db, current_user.id if current_user else None, "READ", "User", None, "SUCCESS", client_ip)
+
+    return {
+        "data": data,
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "totalPages": (total + limit - 1) // limit,
+        },
+    }
+
+
 @router.get("/{user_id}", response_model=schemas.UserResponse)
 async def get_user(user_id: int, current_user: models.UserModel = Depends(get_current_user), db: Session = Depends(get_db)) -> schemas.UserResponse:  # type: ignore
     """Get a single user by id. Admin/agent can read any user; others only themselves."""

@@ -21,9 +21,16 @@ def test_rate_limit_on_login(client, create_user):
     try:
         limiter.enabled = True
 
-        # Don't attempt to mutate limiter internals (may vary by slowapi version).
-        # Instead re-enable it and hammer the login endpoint up to a safe cap
-        # until we receive a 429. This keeps the test robust across versions.
+        # Force a small default for the scope of this test so we reliably hit 429
+        try:
+            if hasattr(limiter, "default_limits"):
+                limiter.default_limits = ["1/second"]
+            else:
+                limiter._default_limits = ["1/second"]
+        except Exception:
+            pass
+
+        # Don't attempt to mutate other internals; hammer the login endpoint until we see a 429
         user = create_user(user_type="contact", username="rl_user", password="pw1")
 
         last_resp = None

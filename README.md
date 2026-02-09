@@ -115,7 +115,7 @@ curl -H "Authorization: Bearer {token}" \
 | SECRET_KEY | (auto-generated) | JWT secret key |
 | ALGORITHM | HS256 | JWT algorithm |
 | ACCESS_TOKEN_EXPIRE_MINUTES | 30 | Token expiration |
-| RATE_LIMIT | 100/minute | Rate limit per IP |
+| RATE_LIMIT | 100/second | Rate limit per IP |
 | DATABASE_URL | sqlite:///./workhub.db | Database URL |
 | ALLOWED_ORIGINS | localhost:3000, localhost:8000 | CORS origins |
 

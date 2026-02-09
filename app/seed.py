@@ -36,7 +36,7 @@ def seed_database(db: Session, current_user: Optional[models.UserModel] = None, 
         users = [
             models.UserModel(
                 username="admin",
-                email="admin@workhub.local",
+                email="admin@example.com",
                 full_name="System Administrator",
                 hashed_password=get_password_hash("admin123"),
                 user_type="admin",
@@ -44,7 +44,7 @@ def seed_database(db: Session, current_user: Optional[models.UserModel] = None, 
             ),
             models.UserModel(
                 username="agent1",
-                email="agent1@workhub.local",
+                email="agent1@example.com",
                 full_name="Agent Smith",
                 hashed_password=get_password_hash("agent123"),
                 user_type="agent",
@@ -52,7 +52,7 @@ def seed_database(db: Session, current_user: Optional[models.UserModel] = None, 
             ),
             models.UserModel(
                 username="agent2",
-                email="agent2@workhub.local",
+                email="agent2@example.com",
                 full_name="Agent Johnson",
                 hashed_password=get_password_hash("agent123"),
                 user_type="agent",
@@ -60,7 +60,7 @@ def seed_database(db: Session, current_user: Optional[models.UserModel] = None, 
             ),
             models.UserModel(
                 username="user1",
-                email="user1@workhub.local",
+                email="user1@example.com",
                 full_name="John User",
                 hashed_password=get_password_hash("user123"),
                 user_type="contact",
@@ -68,7 +68,7 @@ def seed_database(db: Session, current_user: Optional[models.UserModel] = None, 
             ),
             models.UserModel(
                 username="user2",
-                email="user2@workhub.local",
+                email="user2@example.com",
                 full_name="Jane User",
                 hashed_password=get_password_hash("user123"),
                 user_type="contact",
@@ -78,6 +78,17 @@ def seed_database(db: Session, current_user: Optional[models.UserModel] = None, 
         db.add_all(users)
         db.flush()
         created["users"] = len(users)
+
+    # Migrate any existing development emails from @workhub.local to @example.com
+    try:
+        local_users = db.query(models.UserModel).filter(models.UserModel.email.like('%@workhub.local')).all()
+        if local_users:
+            for u in local_users:
+                u.email = u.email.replace('@workhub.local', '@example.com')
+            db.commit()
+    except Exception:
+        # non-critical migration step
+        pass
 
     # Branches
     if db.query(models.BranchModel).count() == 0:

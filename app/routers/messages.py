@@ -246,7 +246,47 @@ async def list_messages(ticket_id: str, request: Request, page: int = Query(1, g
     offset = (page - 1) * limit
     messages = q.order_by(models.MessageModel.created_at.asc()).offset(offset).limit(limit).all()
 
-    data: List[schemas.MessageResponse] = [schemas.MessageResponse.model_validate(m) for m in messages]
+    # Normalize message attachments and convert to response dicts to avoid Pydantic validation issues
+    from urllib.parse import quote
+    data = []
+    for m in messages:
+        if m.attachments:
+            try:
+                raw_list = json.loads(m.attachments)
+            except Exception:
+                raw_list = []
+            normalized = []
+            for item in raw_list:
+                if isinstance(item, str):
+                    path = item
+                    name = None
+                    atype = None
+                    size = None
+                else:
+                    path = item.get("path")
+                    name = item.get("name")
+                    atype = item.get("type")
+                    size = item.get("size")
+                quoted = quote(path, safe="")
+                base = str(request.base_url).rstrip("/") if request is not None else ""
+                url = f"{base}/api/attachments/messages/{quoted}"
+                normalized.append({"path": path, "url": url, "name": name, "type": atype, "size": size})
+        else:
+            normalized = None
+
+        data.append(
+            schemas.MessageResponse.model_validate(
+                {
+                    "id": m.id,
+                    "ticket_id": m.ticket_id,
+                    "sender_id": m.sender_id,
+                    "sender_type": m.sender_type,
+                    "content": m.content,
+                    "attachments": normalized,
+                    "created_at": m.created_at,
+                }
+            ).model_dump()
+        )
 
     _log_audit(db, current_user.id, "READ", "Message", None, "SUCCESS", client_ip)
 
