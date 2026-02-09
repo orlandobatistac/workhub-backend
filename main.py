@@ -207,6 +207,10 @@ class UserModel(Base):
     full_name: Mapped[str] = mapped_column(String)
     hashed_password: Mapped[str] = mapped_column(String)
     role: Mapped[str] = mapped_column(String, default="user")  # admin, agent, user
+    # Optional external identifier for legacy agent mapping (agent.agent_id)
+    agent_external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Optional workgroup association for agent users
+    workgroup_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -268,6 +272,8 @@ class ContactModel(Base):
     phone: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     primary_branch_id: Mapped[str] = mapped_column(String)
     external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Optional link to a users.id when the contact registers
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -281,8 +287,13 @@ class TicketModel(Base):
     status: Mapped[str] = mapped_column(String, default="open")
     resolution: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # resolved, cancelled, duplicate, wontfix
     branch_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # New canonical assignee: user id (nullable)
+    assignee_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Legacy agent identifier (kept for compatibility)
     assignee_agent_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     contact_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Optional secret token for unauthenticated updates (public tickets)
+    secret_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     due_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # User ID who created the ticket
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -347,6 +358,7 @@ class UserResponse(BaseModel):
     email: str
     full_name: str
     role: str
+    workgroup_id: Optional[str]
     is_active: bool
     created_at: datetime
 
@@ -454,6 +466,8 @@ class ContactCreate(BaseModel):
     phone: Optional[str] = Field(None, min_length=7, max_length=20)
     primary_branch_id: str = Field(..., min_length=1)
     external_id: Optional[str] = None
+    # Optional user linkage when contact corresponds to a registered user
+    user_id: Optional[int] = None
 
 
 class ContactUpdate(BaseModel):
@@ -473,6 +487,7 @@ class ContactResponse(BaseModel):
     phone: Optional[str]
     primary_branch_id: str
     external_id: Optional[str]
+    user_id: Optional[int]
     created_at: datetime
 
     class Config:
@@ -486,6 +501,9 @@ class TicketCreate(BaseModel):
     status: str = Field(default="open", pattern="^(open|in_progress|closed)$")
     resolution: Optional[str] = Field(None, pattern="^(resolved|cancelled|duplicate|wontfix)$")
     branch_id: Optional[str] = None
+    # New canonical assignee (user.id)
+    assignee_user_id: Optional[int] = None
+    # Legacy agent identifier (kept for compatibility)
     assignee_agent_id: Optional[str] = None
     contact_id: Optional[str] = None
     due_date: Optional[datetime] = None
@@ -498,8 +516,11 @@ class TicketUpdate(BaseModel):
     status: Optional[str] = Field(None, pattern="^(open|in_progress|closed)$")
     resolution: Optional[str] = Field(None, pattern="^(resolved|cancelled|duplicate|wontfix)$")
     branch_id: Optional[str] = None
+    # Accept both new and legacy assignees
+    assignee_user_id: Optional[int] = None
     assignee_agent_id: Optional[str] = None
     contact_id: Optional[str] = None
+    secret_token: Optional[str] = None
     due_date: Optional[datetime] = None
 
 
@@ -511,8 +532,10 @@ class TicketResponse(BaseModel):
     status: str
     resolution: Optional[str]
     branch_id: Optional[str]
+    assignee_user_id: Optional[int]
     assignee_agent_id: Optional[str]
     contact_id: Optional[str]
+    secret_token: Optional[str]
     due_date: Optional[datetime]
     created_by_id: Optional[int]
     created_at: datetime
@@ -1907,12 +1930,33 @@ async def create_agent(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Create a new agent."""
+    """Create a new agent. Shim: create corresponding User (role='agent') for migration while keeping legacy Agent record."""
     try:
         db_agent = AgentModel(id=str(uuid.uuid4()), **agent.dict())
         db.add(db_agent)
         db.commit()
         db.refresh(db_agent)
+
+        # Ensure a corresponding User exists for this agent
+        existing_user = db.query(UserModel).filter(
+            or_(UserModel.agent_external_id == agent.agent_id, UserModel.username == agent.agent_id)
+        ).first()
+        if not existing_user:
+            # Use a placeholder email to satisfy non-null constraints
+            placeholder_email = f"{agent.agent_id}@no-email.local"
+            db_user = UserModel(
+                username=agent.agent_id,
+                email=placeholder_email,
+                full_name=agent.name,
+                hashed_password="",
+                role="agent",
+                agent_external_id=agent.agent_id,
+                workgroup_id=agent.workgroup_id,
+                is_active=True,
+            )
+            db.add(db_user)
+            db.commit()
+            db.refresh(db_user)
 
         log_audit_optional(
             current_user=current_user,
@@ -1951,8 +1995,45 @@ async def list_agents(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """List all agents."""
+    """List all agents. Shim: prefer `users` with role='agent' when available for migration."""
     offset = (page - 1) * limit
+
+    # If there are users with role 'agent', prefer returning them as agents (migration shim)
+    agent_user_count = db.query(UserModel).filter(UserModel.role == 'agent').count()
+    if agent_user_count > 0:
+        base_query = db.query(UserModel).filter(UserModel.role == 'agent')
+        total = base_query.count()
+
+        if sort_by:
+            if sort_order and sort_order.lower() not in ("asc", "desc"):
+                raise HTTPException(status_code=400, detail="sort_order must be 'asc' or 'desc'")
+            base_query = apply_sorting(base_query, UserModel, sort_by, sort_order)
+
+        users = base_query.offset(offset).limit(limit).all()
+
+        data = []
+        for u in users:
+            data.append(AgentResponse.model_validate({
+                "id": str(u.id),
+                "agent_id": u.username or (u.agent_external_id or ""),
+                "name": u.full_name,
+                "role": "Admin" if to_str(u.role).lower() == "admin" else "Agent",
+                "workgroup_id": u.workgroup_id,
+                "external_id": u.agent_external_id,
+                "created_at": u.created_at,
+            }))
+
+        return {
+            "data": data,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "totalPages": (total + limit - 1) // limit,
+            },
+        }
+
+    # Fallback to legacy agents table
     base_query = db.query(AgentModel)
     total = base_query.count()
 
@@ -1962,7 +2043,6 @@ async def list_agents(
         base_query = apply_sorting(base_query, AgentModel, sort_by, sort_order)
 
     agents = base_query.offset(offset).limit(limit).all()
-
     data = [AgentResponse.model_validate(agent) for agent in agents]
 
     return {
@@ -1984,11 +2064,33 @@ async def get_agent(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Get a specific agent."""
+    """Get a specific agent. Shim: fallback to users with role='agent' if legacy agent not found."""
     agent = db.query(AgentModel).filter(AgentModel.id == agent_id).first()
-    if not agent:
+    if agent:
+        return agent
+
+    # Try to resolve via users (id or username or agent_external_id)
+    user = None
+    try:
+        uid = int(agent_id)
+        user = db.query(UserModel).filter(UserModel.id == uid).first()
+    except ValueError:
+        user = db.query(UserModel).filter(
+            or_(UserModel.username == agent_id, UserModel.agent_external_id == agent_id)
+        ).first()
+
+    if not user or to_str(user.role) not in ("agent", "admin"):
         raise HTTPException(status_code=404, detail="Agent not found")
-    return agent
+
+    return AgentResponse.model_validate({
+        "id": str(user.id),
+        "agent_id": user.username or (user.agent_external_id or ""),
+        "name": user.full_name,
+        "role": "Admin" if to_str(user.role).lower() == "admin" else "Agent",
+        "workgroup_id": user.workgroup_id,
+        "external_id": user.agent_external_id,
+        "created_at": user.created_at,
+    })
 
 
 @app.put("/api/agents/{agent_id}", response_model=AgentResponse, tags=["Agents"])
@@ -2000,7 +2102,7 @@ async def update_agent(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Update an agent."""
+    """Update an agent. Shim: update corresponding User record if present."""
     try:
         agent = db.query(AgentModel).filter(AgentModel.id == agent_id).first()
         if not agent:
@@ -2008,6 +2110,18 @@ async def update_agent(
 
         for key, value in agent_update.dict(exclude_unset=True).items():
             setattr(agent, key, value)
+
+        # Try to update corresponding user by external id
+        corresponding_user = db.query(UserModel).filter(
+            or_(UserModel.agent_external_id == agent.agent_id, UserModel.username == agent.agent_id)
+        ).first()
+        if corresponding_user:
+            if agent_update.name is not None:
+                corresponding_user.full_name = agent_update.name
+            if agent_update.workgroup_id is not None:
+                corresponding_user.workgroup_id = agent_update.workgroup_id
+            db.commit()
+            db.refresh(corresponding_user)
 
         db.commit()
         db.refresh(agent)
@@ -2046,11 +2160,18 @@ async def delete_agent(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Delete an agent."""
+    """Delete an agent. Shim: also delete corresponding User if present."""
     try:
         agent = db.query(AgentModel).filter(AgentModel.id == agent_id).first()
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
+
+        # Delete corresponding user if exists
+        corresponding_user = db.query(UserModel).filter(
+            or_(UserModel.agent_external_id == agent.agent_id, UserModel.username == agent.agent_id)
+        ).first()
+        if corresponding_user:
+            db.delete(corresponding_user)
 
         db.delete(agent)
         db.commit()
@@ -2459,7 +2580,7 @@ async def create_ticket(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Create a new ticket. Requires authentication."""
+    """Create a new ticket. Requires authentication. Supports legacy assignee fields."""
     # Require authentication
     if not current_user:
         raise HTTPException(
@@ -2468,10 +2589,24 @@ async def create_ticket(
         )
 
     try:
+        payload = ticket.dict()
+        # Resolve legacy assignee if provided
+        assignee_user_id = payload.pop('assignee_user_id', None)
+        if not assignee_user_id and payload.get('assignee_agent_id'):
+            agent_val = payload.get('assignee_agent_id')
+            user = db.query(UserModel).filter(
+                or_(UserModel.agent_external_id == agent_val, UserModel.username == agent_val)
+            ).first()
+            if user:
+                assignee_user_id = user.id
+
+        if assignee_user_id:
+            payload['assignee_user_id'] = assignee_user_id
+
         db_ticket = TicketModel(
             id=str(uuid.uuid4()),
             created_by_id=current_user.id,  # Assign creator
-            **ticket.dict()
+            **payload
         )
         db.add(db_ticket)
         db.commit()
@@ -2501,6 +2636,67 @@ async def create_ticket(
             request=request,
         )
         raise
+
+
+# Public tickets endpoint
+class PublicTicketCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    email: str = Field(..., pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
+    subject: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    branch_id: Optional[str] = None
+    primary_branch_id: Optional[str] = None
+
+
+@app.post("/api/public/tickets", tags=["Public"], status_code=200)
+async def create_public_ticket(ticket: PublicTicketCreate, request: Request, db: Session = Depends(get_db)):
+    """Create a ticket from the public portal (no authentication required). Returns ticket id and secret token."""
+    # Find or create contact by email
+    contact = None
+    if ticket.email:
+        contact = db.query(ContactModel).filter(ContactModel.email == ticket.email).first()
+    if not contact:
+        contact = ContactModel(
+            id=str(uuid.uuid4()),
+            contact_id=f"C-{int(uuid.uuid4().int % 1000000):06d}",
+            name=ticket.name,
+            email=ticket.email,
+            phone=None,
+            primary_branch_id=ticket.primary_branch_id or "public",
+            external_id=None,
+            user_id=None,
+        )
+        db.add(contact)
+        db.commit()
+        db.refresh(contact)
+
+    # Create ticket with secret token
+    token = uuid.uuid4().hex
+    db_ticket = TicketModel(
+        id=str(uuid.uuid4()),
+        subject=ticket.subject,
+        description=ticket.description,
+        branch_id=ticket.branch_id,
+        contact_id=contact.id,
+        secret_token=token,
+    )
+    db.add(db_ticket)
+    db.commit()
+    db.refresh(db_ticket)
+
+    # Audit log
+    log_audit_optional(
+        current_user=None,
+        action="CREATE",
+        resource="Ticket",
+        resource_id=str(db_ticket.id),
+        status="SUCCESS",
+        db=db,
+        details="Public ticket created",
+        request=request,
+    )
+
+    return {"id": db_ticket.id, "secret_token": token}
 
 
 @app.get("/api/tickets", response_model=PaginatedResponse, tags=["Tickets"])
@@ -2604,7 +2800,7 @@ async def update_ticket(
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Update a ticket. Access controlled by role."""
+    """Update a ticket. Access controlled by role. Supports legacy assignee fields."""
     # Require authentication
     if not current_user:
         raise HTTPException(
@@ -2624,7 +2820,18 @@ async def update_ticket(
                 detail="Access denied: You can only modify your own tickets"
             )
 
-        for key, value in ticket_update.dict(exclude_unset=True).items():
+        payload = ticket_update.dict(exclude_unset=True)
+
+        # Resolve legacy assignee if provided
+        if 'assignee_user_id' not in payload and 'assignee_agent_id' in payload:
+            agent_val = payload.get('assignee_agent_id')
+            user = db.query(UserModel).filter(
+                or_(UserModel.agent_external_id == agent_val, UserModel.username == agent_val)
+            ).first()
+            if user:
+                payload['assignee_user_id'] = user.id
+
+        for key, value in payload.items():
             setattr(ticket, key, value)
 
         setattr(ticket, 'updated_at', datetime.now(timezone.utc))
