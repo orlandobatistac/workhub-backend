@@ -1011,7 +1011,7 @@ async def seed_data(
             contacts.append(
                 ContactModel(
                     id=str(uuid.uuid4()),
-                    contact_id=f"CT-{idx:03d}",
+                    contact_id=f"C-{uuid.uuid4().hex}",
                     name=f"Contact {idx}",
                     email=f"contact{idx}@example.com" if idx % 2 == 0 else None,
                     phone=f"+1-555-{1000 + idx:04d}" if idx % 3 == 0 else None,
@@ -2424,8 +2424,8 @@ async def create_public_ticket(ticket: PublicTicketCreate, request: Request, db:
         contact = db.query(ContactModel).filter(ContactModel.email == ticket.email).first()
     if not contact:
         contact = ContactModel(
-            id=str(uuid.uuid4()),
-            contact_id=f"C-{int(uuid.uuid4().int % 1000000):06d}",
+            id=str(uuid.UUID(str(uuid.uuid4()))),
+            contact_id=f"C-{uuid.uuid4().hex}",
             name=ticket.name,
             email=ticket.email,
             phone=None,
