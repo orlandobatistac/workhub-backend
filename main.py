@@ -47,6 +47,9 @@ ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_STR.split(",")]
 # Useful for development in GitHub Codespaces, GitHub Pages, and local development
 CORS_PATTERN = os.getenv("CORS_PATTERN", r"https?://(localhost(:\d+)?|.*\.github\.(dev|io)|.*\.orlandobatista\.dev)")
 
+# Development-only test token control
+ENABLE_TEST_TOKEN = os.getenv("ENABLE_TEST_TOKEN", "false").lower() in ("1", "true", "yes")
+
 # File Upload Setup
 UPLOAD_DIR = "uploads/tickets"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -609,16 +612,37 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return response
 
-# CORS Middleware
+# CORS Middleware - Fixed configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,  # Lista específica de orígenes
-    allow_origin_regex=CORS_PATTERN,  # Patrón regex adicional
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow all origins (simplest for local dev)
+    allow_credentials=False,  # Must be False when allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Length", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
 )
+
+# Development helper: monkey-patch CORSMiddleware.preflight_response to log origin
+# so we can debug why some origins are rejected during OPTIONS preflight.
+try:
+    import starlette.middleware.cors as _cors_mod
+    _orig_preflight = _cors_mod.CORSMiddleware.preflight_response
+
+    def _debug_preflight(self, request_headers):
+        try:
+            _origin = request_headers.get("origin")
+            # Append debug info to a file so it survives process reloads
+            with open("cors_debug.log", "a", encoding="utf-8") as f:
+                f.write(f"[DEBUG CORS] preflight origin: {repr(_origin)}\n")
+        except Exception as e:
+            with open("cors_debug.log", "a", encoding="utf-8") as f:
+                f.write(f"[DEBUG CORS] failed to read origin: {e}\n")
+        return _orig_preflight(self, request_headers)
+
+    _cors_mod.CORSMiddleware.preflight_response = _debug_preflight
+except Exception as e:
+    with open("cors_debug.log", "a", encoding="utf-8") as f:
+        f.write(f"[DEBUG CORS] setup failure: {e}\n")
 
 # ============================================================================
 # AUTHENTICATION & SECURITY
@@ -897,6 +921,7 @@ async def health_check(request: Request):
     """Health check endpoint."""
     return {
         "status": "ok",
+        "cors_test": "allow_origins_star_active",  # DEBUG marker
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1268,56 +1293,60 @@ async def login(credentials: LoginRequest, request: Request, db: Session = Depen
         raise
 
 
-@app.post("/api/test-token", tags=["Auth"])
-@limiter.limit(RATE_LIMIT)
-async def get_test_token(
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """
-    ⚠️  DEVELOPMENT ONLY - Get a test token without credentials
+if ENABLE_TEST_TOKEN:
+    @app.post("/api/test-token", tags=["Auth"])
+    @limiter.limit(RATE_LIMIT)
+    async def get_test_token(
+        request: Request,
+        db: Session = Depends(get_db)
+    ):
+        """
+        ⚠️  DEVELOPMENT ONLY - Get a test token without credentials
 
-    Returns a valid JWT token for the default admin user.
-    This endpoint is intended for frontend development and testing.
-    Should be disabled or removed in production.
-    """
-    # Get admin user from database
-    admin_user = db.query(UserModel).filter(UserModel.username == "admin").first()
+        Returns a valid JWT token for the default admin user.
+        This endpoint is intended for frontend development and testing.
+        Should be disabled or removed in production.
+        """
+        # Get admin user from database
+        admin_user = db.query(UserModel).filter(UserModel.username == "admin").first()
 
-    if not admin_user:
-        raise HTTPException(
-            status_code=500,
-            detail="Admin user not found. Run server to initialize seed data."
+        if not admin_user:
+            raise HTTPException(
+                status_code=500,
+                detail="Admin user not found. Run server to initialize seed data."
+            )
+
+        # Create token for admin user
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": admin_user.username},
+            expires_delta=access_token_expires,
         )
 
-    # Create token for admin user
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": admin_user.username},
-        expires_delta=access_token_expires,
-    )
+        log_audit(
+            user_id=to_int(admin_user.id),
+            username=to_str(admin_user.username),
+            action="TEST_TOKEN",
+            resource="Authentication",
+            resource_id=str(admin_user.id),
+            status="SUCCESS",
+            db=db,
+            details="Test token generated (development only)",
+            ip_address=request.client.host if request.client else None,
+        )
 
-    log_audit(
-        user_id=to_int(admin_user.id),
-        username=to_str(admin_user.username),
-        action="TEST_TOKEN",
-        resource="Authentication",
-        resource_id=str(admin_user.id),
-        status="SUCCESS",
-        db=db,
-        details="Test token generated (development only)",
-        ip_address=request.client.host if request.client else None,
-    )
-
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": admin_user.id,
-            "username": admin_user.username,
-            "role": admin_user.role
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": admin_user.id,
+                "username": admin_user.username,
+                "role": admin_user.role
+            }
         }
-    }
+else:
+    # Test token endpoint is disabled in this environment
+    pass
 
 
 @app.get("/api/me", response_model=UserResponse, tags=["Authentication"])
@@ -1690,10 +1719,12 @@ async def list_audit_logs(
 async def create_branch(
     branch: BranchCreate,
     request: Request,
-    current_user: Optional[UserModel] = Depends(get_optional_user),
+    current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Create a new branch."""
+    # Require agent or admin
+    current_user = require_agent_or_admin(current_user)
     try:
         db_branch = BranchModel(id=str(uuid.uuid4()), **branch.dict())
         db.add(db_branch)
@@ -1784,10 +1815,12 @@ async def update_branch(
     branch_id: str,
     branch_update: BranchUpdate,
     request: Request,
-    current_user: Optional[UserModel] = Depends(get_optional_user),
+    current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Update a branch."""
+    # Require agent or admin
+    current_user = require_agent_or_admin(current_user)
     try:
         branch = db.query(BranchModel).filter(BranchModel.id == branch_id).first()
         if not branch:
@@ -1830,10 +1863,12 @@ async def update_branch(
 async def delete_branch(
     branch_id: str,
     request: Request,
-    current_user: Optional[UserModel] = Depends(get_optional_user),
+    current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Delete a branch."""
+    # Require agent or admin
+    current_user = require_agent_or_admin(current_user)
     try:
         branch = db.query(BranchModel).filter(BranchModel.id == branch_id).first()
         if not branch:
@@ -1875,10 +1910,12 @@ async def delete_branch(
 async def create_workgroup(
     workgroup: WorkgroupCreate,
     request: Request,
-    current_user: Optional[UserModel] = Depends(get_optional_user),
+    current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Create a new workgroup."""
+    # Require agent or admin
+    current_user = require_agent_or_admin(current_user)
     try:
         db_workgroup = WorkgroupModel(id=str(uuid.uuid4()), **workgroup.dict())
         db.add(db_workgroup)
@@ -1968,10 +2005,12 @@ async def update_workgroup(
     workgroup_id: str,
     workgroup_update: WorkgroupUpdate,
     request: Request,
-    current_user: Optional[UserModel] = Depends(get_optional_user),
+    current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Update a workgroup."""
+    # Require agent or admin
+    current_user = require_agent_or_admin(current_user)
     try:
         workgroup = db.query(WorkgroupModel).filter(WorkgroupModel.id == workgroup_id).first()
         if not workgroup:
@@ -2014,10 +2053,12 @@ async def update_workgroup(
 async def delete_workgroup(
     workgroup_id: str,
     request: Request,
-    current_user: Optional[UserModel] = Depends(get_optional_user),
+    current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Delete a workgroup."""
+    # Require agent or admin
+    current_user = require_agent_or_admin(current_user)
     try:
         workgroup = db.query(WorkgroupModel).filter(WorkgroupModel.id == workgroup_id).first()
         if not workgroup:
@@ -2059,10 +2100,12 @@ async def delete_workgroup(
 async def create_contact(
     contact: ContactCreate,
     request: Request,
-    current_user: Optional[UserModel] = Depends(get_optional_user),
+    current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Create a new contact."""
+    # Require agent or admin
+    current_user = require_agent_or_admin(current_user)
     try:
         db_contact = ContactModel(id=str(uuid.uuid4()), **contact.dict())
         db.add(db_contact)
@@ -2152,10 +2195,12 @@ async def update_contact(
     contact_id: str,
     contact_update: ContactUpdate,
     request: Request,
-    current_user: Optional[UserModel] = Depends(get_optional_user),
+    current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Update a contact."""
+    # Require agent or admin
+    current_user = require_agent_or_admin(current_user)
     try:
         contact = db.query(ContactModel).filter(ContactModel.id == contact_id).first()
         if not contact:
@@ -2198,10 +2243,12 @@ async def update_contact(
 async def delete_contact(
     contact_id: str,
     request: Request,
-    current_user: Optional[UserModel] = Depends(get_optional_user),
+    current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Delete a contact."""
+    # Require agent or admin
+    current_user = require_agent_or_admin(current_user)
     try:
         contact = db.query(ContactModel).filter(ContactModel.id == contact_id).first()
         if not contact:
@@ -2690,10 +2737,21 @@ async def list_ticket_messages(
     limit: int = 10,
     sort_by: Optional[str] = None,
     sort_order: Optional[str] = None,
+    secret_token: Optional[str] = Query(None),
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """List messages for a ticket."""
+    # Access control: require auth or valid secret token
+    ticket = db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if current_user:
+        if not can_access_ticket(ticket, current_user):
+            raise HTTPException(status_code=403, detail="Access denied")
+    else:
+        if not ticket.secret_token or ticket.secret_token != secret_token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required or valid secret_token")
     offset = (page - 1) * limit
     base_query = db.query(MessageModel).filter(MessageModel.ticket_id == ticket_id)
     total = base_query.count()
@@ -2725,11 +2783,23 @@ async def create_ticket_message(
     request: Request,
     content: str = Form(...),
     attachments: List[UploadFile] = File(default=[]),
+    secret_token: Optional[str] = Form(None),
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """Create a message for a ticket with optional file attachments."""
     try:
+        # Access control: require auth or valid secret token for the ticket
+        ticket = db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        if current_user:
+            if not can_access_ticket(ticket, current_user):
+                raise HTTPException(status_code=403, detail="Access denied")
+        else:
+            if not ticket.secret_token or ticket.secret_token != secret_token:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required or valid secret_token")
+
         # Derive sender information from authenticated user
         if current_user:
             sender_name = current_user.full_name or current_user.username
@@ -2853,6 +2923,7 @@ async def create_ticket_message(
 async def download_attachment(
     path: str,
     request: Request,
+    secret_token: Optional[str] = Query(None),
     current_user: Optional[UserModel] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
@@ -2860,6 +2931,24 @@ async def download_attachment(
     # Security: prevent path traversal
     if ".." in path or "/" in path or "\\" in path:
         raise HTTPException(status_code=400, detail="Invalid file path")
+
+    # Find which ticket this attachment belongs to (if any)
+    messages_with_attachment = db.query(MessageModel).filter(MessageModel.attachments.like(f'%"{path}"%')).all()
+    if not messages_with_attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    ticket_id = messages_with_attachment[0].ticket_id
+    ticket = db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    # Authorization: either authenticated + authorized, or provide matching secret_token
+    if current_user:
+        if not can_access_ticket(ticket, current_user):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    else:
+        if not ticket.secret_token or ticket.secret_token != secret_token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required or valid secret_token")
 
     # Construct full path
     filepath = os.path.join(UPLOAD_DIR, path)
