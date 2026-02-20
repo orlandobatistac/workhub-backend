@@ -10,7 +10,8 @@ from functools import lru_cache
 from fastapi import FastAPI, Depends, HTTPException, status, Request, Form, UploadFile, File, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, ForeignKey, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, Mapped, mapped_column
@@ -40,7 +41,20 @@ SECRET_KEY = DEFAULT_SECRET
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 RATE_LIMIT = os.getenv("RATE_LIMIT", "100/minute")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./workhub.db")
+
+# MariaDB Configuration
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "3306")
+DB_USER = os.getenv("DB_USER", "workhub")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "workhub_password")
+DB_NAME = os.getenv("DB_NAME", "workhub")
+
+# Build DATABASE_URL for MariaDB (fallback to SQLite for development)
+if os.getenv("USE_SQLITE", "false").lower() in ("1", "true", "yes"):
+    DATABASE_URL = "sqlite:///./workhub.db"
+else:
+    DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4"
+
 ALLOWED_ORIGINS_STR = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000,http://localhost:5000")
 ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_STR.split(",")]
 
@@ -154,11 +168,24 @@ async def validate_upload_file(file: UploadFile) -> bytes:
     return content
 
 # Database Setup
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
-    poolclass=StaticPool if "sqlite" in DATABASE_URL else None,
-)
+# Configure engine based on database type
+if "sqlite" in DATABASE_URL:
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+else:
+    # MariaDB/MySQL configuration
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,  # Verify connections before using
+        pool_recycle=3600,   # Recycle connections after 1 hour
+        pool_size=10,        # Connection pool size
+        max_overflow=20,     # Max connections beyond pool_size
+        echo=False,          # Set to True for SQL debugging
+    )
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -236,15 +263,15 @@ class UserModel(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    username: Mapped[str] = mapped_column(String, unique=True, index=True)
-    email: Mapped[str] = mapped_column(String, unique=True, index=True)
-    full_name: Mapped[str] = mapped_column(String)
-    hashed_password: Mapped[str] = mapped_column(String)
-    role: Mapped[str] = mapped_column(String, default="contact")  # admin, agent, contact
+    username: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(255))
+    hashed_password: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(50), default="contact")  # admin, agent, contact
     # Optional external identifier for legacy agent mapping (agent.agent_id)
-    agent_external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    agent_external_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # Optional workgroup association for agent users
-    workgroup_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    workgroup_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -254,46 +281,46 @@ class AuditLogModel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    username: Mapped[str] = mapped_column(String)
-    action: Mapped[str] = mapped_column(String)  # CREATE, READ, UPDATE, DELETE
-    resource: Mapped[str] = mapped_column(String)  # Branch, Agent, etc.
-    resource_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    username: Mapped[str] = mapped_column(String(255))
+    action: Mapped[str] = mapped_column(String(50))  # CREATE, READ, UPDATE, DELETE
+    resource: Mapped[str] = mapped_column(String(100))  # Branch, Agent, etc.
+    resource_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String)  # SUCCESS, FAILED
-    ip_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String(50))  # SUCCESS, FAILED
+    ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class BranchModel(Base):
     __tablename__ = "branches"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
-    branch_code: Mapped[str] = mapped_column(String, unique=True, index=True)
-    name: Mapped[str] = mapped_column(String, index=True)
-    address: Mapped[str] = mapped_column(String)
-    status: Mapped[str] = mapped_column(String, default="active")
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, index=True)
+    branch_code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    address: Mapped[str] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(50), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class WorkgroupModel(Base):
     __tablename__ = "workgroups"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
-    name: Mapped[str] = mapped_column(String, index=True)
-    description: Mapped[str] = mapped_column(String)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    description: Mapped[str] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class ContactModel(Base):
     __tablename__ = "contacts"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
-    contact_id: Mapped[str] = mapped_column(String, unique=True, index=True)
-    name: Mapped[str] = mapped_column(String, index=True)
-    email: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
-    phone: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    primary_branch_id: Mapped[str] = mapped_column(String)
-    external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, index=True)
+    contact_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    primary_branch_id: Mapped[str] = mapped_column(String(36))
+    external_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # Optional link to a users.id when the contact registers
     user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -302,18 +329,18 @@ class ContactModel(Base):
 class TicketModel(Base):
     __tablename__ = "tickets"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
-    subject: Mapped[str] = mapped_column(String, index=True)
-    description: Mapped[str] = mapped_column(String)
-    priority: Mapped[str] = mapped_column(String, default="medium")
-    status: Mapped[str] = mapped_column(String, default="open")
-    resolution: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # resolved, cancelled, duplicate, wontfix
-    branch_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, index=True)
+    subject: Mapped[str] = mapped_column(String(500), index=True)
+    description: Mapped[str] = mapped_column(Text)
+    priority: Mapped[str] = mapped_column(String(50), default="medium")
+    status: Mapped[str] = mapped_column(String(50), default="open")
+    resolution: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # resolved, cancelled, duplicate, wontfix
+    branch_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     # Canonical assignee: user id (nullable)
     assignee_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    contact_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    contact_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     # Optional secret token for unauthenticated updates (public tickets)
-    secret_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    secret_token: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     due_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # User ID who created the ticket
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -323,11 +350,11 @@ class TicketModel(Base):
 class MessageModel(Base):
     __tablename__ = "messages"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
-    ticket_id: Mapped[str] = mapped_column(String, index=True)
-    sender_name: Mapped[str] = mapped_column(String)
-    sender_type: Mapped[str] = mapped_column(String)
-    content: Mapped[str] = mapped_column(String)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, index=True)
+    ticket_id: Mapped[str] = mapped_column(String(36), index=True)
+    sender_name: Mapped[str] = mapped_column(String(255))
+    sender_type: Mapped[str] = mapped_column(String(50))
+    content: Mapped[str] = mapped_column(Text)
     attachments: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -604,6 +631,8 @@ app = FastAPI(
     title="WorkHub API",
     description="Production-ready REST API with Security Features",
     version="1.0.1",
+    docs_url=None,  # Disable default Swagger UI
+    redoc_url=None,  # Disable default ReDoc
 )
 
 # Rate Limiter
@@ -643,7 +672,15 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    # Strict CSP - all resources from self (local)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'"
+    )
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return response
 
@@ -678,6 +715,34 @@ try:
 except Exception as e:
     with open("cors_debug.log", "a", encoding="utf-8") as f:
         f.write(f"[DEBUG CORS] setup failure: {e}\n")
+
+# ============================================================================
+# STATIC FILES & DOCUMENTATION
+# ============================================================================
+
+# Mount static files (Swagger UI, ReDoc, fonts)
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Custom Swagger UI endpoint using local assets
+@app.get("/docs", response_class=HTMLResponse)
+async def swagger_ui():
+    """Serve Swagger UI with local assets."""
+    try:
+        with open("static/swagger-ui/index.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Swagger UI not available</h1><p>Static files not found. Run: python scripts/download_static_assets.py</p>"
+
+# Custom ReDoc endpoint using local assets
+@app.get("/redoc", response_class=HTMLResponse)
+async def redoc_ui():
+    """Serve ReDoc with local assets."""
+    try:
+        with open("static/redoc/index.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>ReDoc not available</h1><p>Static files not found. Run: python scripts/download_static_assets.py</p>"
 
 # ============================================================================
 # AUTHENTICATION & SECURITY

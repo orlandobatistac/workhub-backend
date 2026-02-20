@@ -61,7 +61,10 @@ Thumbs.db
 # Project specific
 workhub.db
 audit.log
-uploads/
+
+# Uploads - ignore content but keep structure
+uploads/**/*
+!uploads/**/.gitkeep
 
 # Temporary files
 tmpclaude-*

@@ -1,0 +1,57 @@
+services:
+  # Base de datos MariaDB
+  mariadb:
+    image: mariadb:11.2
+    container_name: workhub-mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: workhub
+      MYSQL_USER: workhub
+      MYSQL_PASSWORD: workhub_password
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max-connections=200
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - workhub-network
+
+  # Backend FastAPI
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: workhub-backend
+    restart: unless-stopped
+    environment:
+      SECRET_KEY: dev-secret-key-change-in-production
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_USER: workhub
+      DB_PASSWORD: workhub_password
+      DB_NAME: workhub
+      ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    networks:
+      - workhub-network
+
+volumes:
+  mariadb_data:
+    driver: local
+
+networks:
+  workhub-network:
+    driver: bridge

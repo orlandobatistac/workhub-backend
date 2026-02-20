@@ -1,127 +1,106 @@
 # WorkHub API
 
-FastAPI backend for ticket management system.
+Backend REST API para gestión de tickets y soporte.
 
-## Setup
+## Instalación Rápida
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-uvicorn main:app --reload
-```
-
-Server: `http://localhost:8000`
-
-## API Endpoints
-
-### Base URL: `/api`
-
-| Method | Endpoint | Description |
-|--------|----------|---|
-| **Branches** |
-| GET | `/branches` | List (paginated) |
-| POST | `/branches` | Create |
-| GET | `/branches/{id}` | Get one |
-| PUT | `/branches/{id}` | Update |
-| DELETE | `/branches/{id}` | Delete |
-| **Agents** |
-| GET | `/agents` | List (paginated) |
-| POST | `/agents` | Create |
-| GET | `/agents/{id}` | Get one |
-| PUT | `/agents/{id}` | Update |
-| DELETE | `/agents/{id}` | Delete |
-| **Workgroups** |
-| GET | `/workgroups` | List (paginated) |
-| POST | `/workgroups` | Create |
-| GET | `/workgroups/{id}` | Get one |
-| PUT | `/workgroups/{id}` | Update |
-| DELETE | `/workgroups/{id}` | Delete |
-| **Contacts** |
-| GET | `/contacts` | List (paginated) |
-| POST | `/contacts` | Create |
-| GET | `/contacts/{id}` | Get one |
-| PUT | `/contacts/{id}` | Update |
-| DELETE | `/contacts/{id}` | Delete |
-| **Tickets** |
-| GET | `/tickets` | List (paginated) |
-| POST | `/tickets` | Create |
-| GET | `/tickets/{id}` | Get one |
-| PUT | `/tickets/{id}` | Update |
-| DELETE | `/tickets/{id}` | Delete |
-| **Messages** |
-| GET | `/tickets/{ticketId}/messages` | List by ticket |
-| POST | `/tickets/{ticketId}/messages` | Create message |
-| **System** |
-| GET | `/health` | Health check |
-| POST | `/seed` | Generate demo data |
-| POST | `/token` | Login (JWT) |
-| POST | `/register` | Create user |
-
-## Response Format
-
-### Pagination
-```
-GET /api/branches?page=1&limit=10
-```
-
-### Paginated Response
-```json
-{
-  "data": [...],
-  "pagination": {
-    "page": 1,
-    "limit": 10,
-    "total": 50,
-    "totalPages": 5
-  }
-}
-```
-
-### Error Response
-```json
-{
-  "message": "Error description",
-  "status": 400
-}
-```
-
-## Authentication
+### Windows
 
 ```bash
-# Login
+install.bat
+```
+
+La instalación descarga Docker, configura la base de datos y inicia el sistema automáticamente.
+
+### Linux / macOS
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+## ¿Qué se instala?
+
+- **Backend API**: FastAPI en puerto `8000`
+- **Base de datos**: MariaDB en puerto `3306` (interno)
+- **Documentación**: Swagger UI y ReDoc
+
+## URLs Principales
+
+| URL | Propósito |
+|-----|-----------|
+| http://localhost:8000/api/health | Estado del sistema |
+| http://localhost:8000/docs | Documentación técnica (testing) |
+| http://localhost:8000/redoc | Documentación (lectura) |
+
+## Autenticación
+
+**Usuario por defecto:**
+```
+Username: admin
+Password: admin123
+```
+
+**Obtener token JWT:**
+```bash
 curl -X POST http://localhost:8000/api/token \
   -H "Content-Type: application/json" \
   -d '{"username": "admin", "password": "admin123"}'
+```
 
-# Use token
+**Usar token:**
+```bash
 curl -H "Authorization: Bearer {token}" \
   http://localhost:8000/api/branches
 ```
 
-## Environment Variables
+## API Endpoints
 
-| Variable | Default | Description |
-|----------|---------|---|
-| SECRET_KEY | (auto-generated) | JWT secret key |
-| ALGORITHM | HS256 | JWT algorithm |
-| ACCESS_TOKEN_EXPIRE_MINUTES | 30 | Token expiration |
-| RATE_LIMIT | 100/minute | Rate limit per IP |
-| DATABASE_URL | sqlite:///./workhub.db | Database URL |
-| ALLOWED_ORIGINS | localhost:3000, localhost:8000 | CORS origins |
+### Base: `/api`
 
-## Database
+| Recurso | GET | POST | PUT | DELETE |
+|---------|-----|------|-----|--------|
+| `/branches` | ✅ | ✅ | ✅ | ✅ |
+| `/agents` | ✅ | ✅ | ✅ | ✅ |
+| `/workgroups` | ✅ | ✅ | ✅ | ✅ |
+| `/contacts` | ✅ | ✅ | ✅ | ✅ |
+| `/tickets` | ✅ | ✅ | ✅ | ✅ |
+| `/tickets/{id}/messages` | ✅ | ✅ | - | - |
+| `/seed` | - | ✅ | - | - |
 
-SQLite by default. Change via `DATABASE_URL` in `.env`.
+## Configuración
 
-Tables: users, branches, agents, workgroups, contacts, tickets, messages, audit_logs
+El archivo `.env` contiene las configuraciones. Creado automáticamente en la instalación.
 
-## Docs
+**Si necesitas cambiar algo:**
+```
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=workhub
+DB_PASSWORD=workhub_password
+DB_NAME=workhub
+```
 
-- Swagger: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+## Comandos Útiles
 
-## License
+```bash
+# Ver estado
+docker-compose ps
 
-MIT
+# Ver logs
+docker-compose logs backend
+
+# Reiniciar
+docker-compose restart
+
+# Detener
+docker-compose down
+
+# Generar datos de prueba
+curl -X POST http://localhost:8000/api/seed
+```
+
+## Soporte
+
+Para reportar problemas o sugerencias, contacta al equipo de desarrollo.
+
