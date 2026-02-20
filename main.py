@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import uuid
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Any
 import json
@@ -49,6 +50,12 @@ CORS_PATTERN = os.getenv("CORS_PATTERN", r"https?://(localhost(:\d+)?|.*\.github
 
 # Development-only test token control
 ENABLE_TEST_TOKEN = os.getenv("ENABLE_TEST_TOKEN", "false").lower() in ("1", "true", "yes")
+
+# SSO (external portal) configuration
+SSO_ISSUER = os.getenv("SSO_ISSUER", "php-portal")
+SSO_AUDIENCE = os.getenv("SSO_AUDIENCE", "workhub-support")
+SSO_ALGORITHM = os.getenv("SSO_ALGORITHM", "HS256")
+SSO_SECRET = os.getenv("SSO_SECRET", "")
 
 # File Upload Setup
 UPLOAD_DIR = "uploads/tickets"
@@ -195,6 +202,30 @@ def to_optional_str(value: Any) -> Optional[str]:
     if value is None:
         return None
     return str(value)
+
+
+def decode_sso_token(token: str) -> dict:
+    """Decode and validate an external SSO token from the PHP portal."""
+    if not SSO_SECRET:
+        raise HTTPException(status_code=500, detail="SSO is not configured")
+
+    try:
+        payload = jwt.decode(
+            token,
+            SSO_SECRET,
+            algorithms=[SSO_ALGORITHM],
+            audience=SSO_AUDIENCE,
+            issuer=SSO_ISSUER,
+        )
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid SSO token")
+
+    if not payload.get("sub"):
+        raise HTTPException(status_code=400, detail="SSO token missing subject")
+    if not payload.get("email"):
+        raise HTTPException(status_code=400, detail="SSO token missing email")
+
+    return payload
 
 
 # ============================================================================
@@ -371,6 +402,10 @@ class UserUpdate(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class SsoExchangeRequest(BaseModel):
+    token: str
 
 
 class TokenResponse(BaseModel):
@@ -1291,6 +1326,53 @@ async def login(credentials: LoginRequest, request: Request, db: Session = Depen
             ip_address=request.client.host if request.client else None,
         )
         raise
+
+
+@app.post("/api/sso/exchange", response_model=TokenResponse, tags=["Authentication"])
+@limiter.limit(RATE_LIMIT)
+async def sso_exchange(payload: SsoExchangeRequest, request: Request, db: Session = Depends(get_db)):
+    """Exchange a PHP portal SSO token for a WorkHub JWT."""
+    sso_claims = decode_sso_token(payload.token)
+
+    username = to_str(sso_claims.get("sub"))
+    email = to_str(sso_claims.get("email")).strip()
+    full_name = to_str(sso_claims.get("name") or email or username)
+    role_claim = to_str(sso_claims.get("role") or "contact").lower()
+    role_map = {"admin": "admin", "agent": "agent", "contact": "contact"}
+    role = role_map.get(role_claim, "contact")
+
+    user = db.query(UserModel).filter(
+        or_(UserModel.username == username, UserModel.email == email)
+    ).first()
+
+    if user:
+        user.username = username
+        user.email = email
+        user.full_name = full_name
+        user.role = role
+        user.is_active = True
+    else:
+        random_password = secrets.token_urlsafe(24)
+        user = UserModel(
+            username=username,
+            email=email,
+            full_name=full_name,
+            hashed_password=get_password_hash(random_password),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+
+    db.commit()
+    db.refresh(user)
+
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username},
+        expires_delta=access_token_expires,
+    )
+
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
 if ENABLE_TEST_TOKEN:
