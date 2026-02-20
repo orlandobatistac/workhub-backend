@@ -42,12 +42,25 @@ fi
 
 echo ""
 echo "🔨 Construyendo contenedores..."
-docker-compose build --quiet
+docker-compose down --remove-orphans 2>/dev/null || true
+docker-compose up --build -d
 
 echo ""
-echo "🚀 Iniciando servicios..."
-docker-compose up -d
+echo "⏳ Esperando a que los servicios estén listos (20 segundos)..."
+sleep 20
 
+echo ""
+echo "=================================================="
+echo "✅ WORKHUB INSTALADO Y CORRIENDO"
+echo "=================================================="
+echo ""
+docker-compose ps
+echo ""
+echo "📍 URLs disponibles:"
+echo "   🖥️  Frontend:  http://localhost:3000"
+echo "   📚 Backend:   http://localhost:8000"
+echo "   📖 Docs:      http://localhost:8000/docs"
+echo ""
 echo ""
 echo "⏳ Esperando a que MariaDB esté listo..."
 sleep 10

@@ -48,6 +48,20 @@ services:
     networks:
       - workhub-network
 
+  # Frontend React/Vite
+  frontend:
+    build:
+      context: ../workhub-support-syst
+      dockerfile: Dockerfile
+    container_name: workhub-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - workhub-network
+
 volumes:
   mariadb_data:
     driver: local

@@ -23,12 +23,14 @@ docker-compose down --remove-orphans 2>nul
 
 REM Construir e iniciar
 echo.
-echo Iniciando WorkHub...
+echo ====================================
+echo INSTALANDO WORKHUB
+echo ====================================
 echo.
 docker-compose up --build -d
 
-REM Esperar a MariaDB
-timeout /t 15 /nobreak >nul
+REM Esperar a que los servicios estén listos
+timeout /t 20 /nobreak >nul
 
 REM Ver estado
 cls
@@ -39,7 +41,8 @@ echo ====================================
 echo.
 docker-compose ps
 echo.
-echo Abre en el navegador:
-echo http://localhost:8000/docs
+echo URLs:
+echo   Frontend: http://localhost:3000
+echo   Backend:  http://localhost:8000/docs
 echo.
 pause
