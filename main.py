@@ -2601,8 +2601,10 @@ async def register_contact(
 
 # Public tickets endpoint
 class PublicTicketCreate(BaseModel):
-    name: str = Field(..., min_length=1)
+    name: Optional[str] = Field(None)
     email: str = Field(..., pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
+    contact_id: Optional[str] = Field(None)
+    phone: Optional[str] = Field(None)
     subject: str = Field(..., min_length=1)
     description: str = Field(..., min_length=1)
     branch_id: Optional[str] = None
@@ -2614,15 +2616,34 @@ async def create_public_ticket(ticket: PublicTicketCreate, request: Request, db:
     """Create a ticket from the public portal (no authentication required). Returns ticket id and secret token."""
     # Find or create contact by email
     contact = None
-    if ticket.email:
+    if ticket.contact_id:
+        contact = db.query(ContactModel).filter(ContactModel.contact_id == ticket.contact_id).first()
+    if not contact and ticket.email:
         contact = db.query(ContactModel).filter(ContactModel.email == ticket.email).first()
-    if not contact:
+
+    if contact:
+        if ticket.contact_id and contact.contact_id and contact.contact_id != ticket.contact_id:
+            raise HTTPException(status_code=400, detail="contact_id does not match existing contact")
+        if ticket.email and contact.email and contact.email != ticket.email:
+            raise HTTPException(status_code=400, detail="email does not match existing contact")
+
+        updated = False
+        if ticket.email and not contact.email:
+            contact.email = ticket.email
+            updated = True
+        if ticket.phone and not contact.phone:
+            contact.phone = ticket.phone
+            updated = True
+        if updated:
+            db.commit()
+            db.refresh(contact)
+    else:
         contact = ContactModel(
             id=str(uuid.UUID(str(uuid.uuid4()))),
-            contact_id=f"C-{uuid.uuid4().hex}",
-            name=ticket.name,
+            contact_id=ticket.contact_id or f"C-{uuid.uuid4().hex}",
+            name=ticket.name or ticket.email.split('@')[0],
             email=ticket.email,
-            phone=None,
+            phone=ticket.phone,
             primary_branch_id=ticket.primary_branch_id or "public",
             external_id=None,
             user_id=None,
